@@ -1,0 +1,388 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.tammyx44.signpost",
+  "name": "Signpost",
+  "version": "0.5.0",
+  "author": "TammyX44",
+  "license": "MIT",
+  "description": "Names workspaces from their contents, shows agent and terminal command status, and adds a project switcher. Claude Code and trusted Codex hooks report permission requests directly. OpenCode 2.x support is experimental, and unread counts are opt-in.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Signpost.qml"
+  },
+  "barWidget": {
+    "displayName": "Signpost",
+    "description": "Workspace numbers with automatic names and agent status (replaces omarchy.workspaces)",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "names": "smart",
+      "fit": true,
+      "style": "tiles",
+      "density": "comfortable",
+      "showNumbers": true,
+      "showMore": true,
+      "plainWorkspaces": "",
+      "ignoreClasses": "",
+      "agentBadge": true,
+      "badgeStates": [
+        "working",
+        "needsYou",
+        "ready"
+      ],
+      "alerts": true,
+      "showQuestions": true,
+      "hideWhenSharing": true,
+      "commandStatus": true,
+      "unreadApps": [],
+      "hoverCard": true,
+      "switcherGit": "selected",
+      "switcherRecents": true,
+      "projectRoots": "~/Projects",
+      "recentIgnore": "/tmp/*, ~/.cache/*",
+      "agentCommand": "claude",
+      "maxWidthPercent": 40,
+      "maxLength": 12,
+      "longCommandSeconds": 30,
+      "renameDelay": 5,
+      "sources": [
+        "agents",
+        "projects",
+        "ssh",
+        "models",
+        "titleRules",
+        "webapps",
+        "apps"
+      ]
+    },
+    "schema": [
+      {
+        "key": "names",
+        "type": "enum",
+        "label": "Bar · Names",
+        "defaultValue": "smart",
+        "options": [
+          {
+            "value": "smart",
+            "label": "Smart: projects, agents, hosts and web apps (plain apps show their logo)"
+          },
+          {
+            "value": "all",
+            "label": "On every workspace"
+          },
+          {
+            "value": "focused",
+            "label": "Focused workspace only"
+          },
+          {
+            "value": "hover",
+            "label": "On hover"
+          },
+          {
+            "value": "none",
+            "label": "None (logos only)"
+          }
+        ],
+        "description": "Smart keeps the bar's text for the things you named it for: a plain kitty, browser or editor with no project shows its number and logo."
+      },
+      {
+        "key": "fit",
+        "type": "boolean",
+        "label": "Bar · Shrink names to fit",
+        "defaultValue": true,
+        "description": "When names don't fit the room below, the least recently used shrink first: short name, then logo, then number."
+      },
+      {
+        "key": "style",
+        "type": "enum",
+        "label": "Bar · Style",
+        "defaultValue": "tiles",
+        "options": [
+          {
+            "value": "tiles",
+            "label": "Tiles: projects in their colour, apps on a neutral tile"
+          },
+          {
+            "value": "logos",
+            "label": "Logos in colour"
+          },
+          {
+            "value": "mono",
+            "label": "Logos tinted to the theme"
+          },
+          {
+            "value": "minimal",
+            "label": "No icons"
+          }
+        ]
+      },
+      {
+        "key": "density",
+        "type": "enum",
+        "label": "Bar · Density",
+        "defaultValue": "comfortable",
+        "options": [
+          {
+            "value": "comfortable",
+            "label": "Comfortable"
+          },
+          {
+            "value": "compact",
+            "label": "Compact (smaller tiles; a tile replaces its number)"
+          }
+        ]
+      },
+      {
+        "key": "showNumbers",
+        "type": "boolean",
+        "label": "Bar · Workspace numbers",
+        "defaultValue": true,
+        "description": "Off hides the number where a tile or name shows. Super + number still works, but you lose the reminder of which key is which."
+      },
+      {
+        "key": "showMore",
+        "type": "boolean",
+        "label": "Bar · Extra counts",
+        "defaultValue": true,
+        "description": "Show the +N for other projects and enabled unread counts."
+      },
+      {
+        "key": "plainWorkspaces",
+        "type": "string",
+        "label": "Bar · Workspaces that only show their number",
+        "defaultValue": "",
+        "description": "Comma-separated workspace numbers as Hyprland counts them (on a second monitor: 11, 12…), e.g. 9, 10."
+      },
+      {
+        "key": "ignoreClasses",
+        "type": "string",
+        "label": "Bar · Ignore these window classes",
+        "defaultValue": "",
+        "description": "Comma-separated. These windows never name a workspace."
+      },
+      {
+        "key": "agentBadge",
+        "type": "boolean",
+        "label": "Agents · Status badge",
+        "defaultValue": true,
+        "description": "Show agent status on the tile. Terminal command badges have their own toggle."
+      },
+      {
+        "key": "badgeStates",
+        "type": "multiselect",
+        "label": "Agents · Badge shows",
+        "noSelectionText": "All states",
+        "defaultValue": [
+          "working",
+          "needsYou",
+          "ready"
+        ],
+        "options": [
+          {
+            "value": "working",
+            "label": "Working"
+          },
+          {
+            "value": "needsYou",
+            "label": "Needs you"
+          },
+          {
+            "value": "ready",
+            "label": "Finished"
+          }
+        ],
+        "description": "Working and finished also filter terminal commands, including reported failures."
+      },
+      {
+        "key": "alerts",
+        "type": "boolean",
+        "label": "Agents · Alert when an agent needs you",
+        "defaultValue": true,
+        "description": "Notify when a supported agent reports a permission request on another workspace. Alerts pause during screen sharing."
+      },
+      {
+        "key": "showQuestions",
+        "type": "boolean",
+        "label": "Agents · Show what the agent asks",
+        "defaultValue": true,
+        "description": "Off keeps the question's words out of the alert, the hover card and the switcher (they only say that it needs you)."
+      },
+      {
+        "key": "hideWhenSharing",
+        "type": "boolean",
+        "label": "Agents · Hide names while sharing the screen",
+        "defaultValue": true
+      },
+      {
+        "key": "commandStatus",
+        "type": "boolean",
+        "label": "Activity · Terminal command status",
+        "defaultValue": true,
+        "description": "Show sampled build, test and long commands. A shell hook is required for pass/fail."
+      },
+      {
+        "key": "unreadApps",
+        "type": "multiselect",
+        "label": "Activity · Unread counts",
+        "defaultValue": [],
+        "noSelectionText": "Off",
+        "options": [
+          {
+            "value": "whatsapp",
+            "label": "WhatsApp web app"
+          }
+        ],
+        "description": "Show counts from recognised window titles. Empty turns this off."
+      },
+      {
+        "key": "hoverCard",
+        "type": "boolean",
+        "label": "Hover & switcher · Hover card",
+        "defaultValue": true,
+        "description": "What is open on a workspace and why it has its name."
+      },
+      {
+        "key": "switcherGit",
+        "type": "enum",
+        "label": "Hover & switcher · Git line in the switcher",
+        "defaultValue": "selected",
+        "options": [
+          {
+            "value": "always",
+            "label": "On every row"
+          },
+          {
+            "value": "selected",
+            "label": "On the selected row"
+          },
+          {
+            "value": "never",
+            "label": "Never (git is not run)"
+          }
+        ]
+      },
+      {
+        "key": "switcherRecents",
+        "type": "boolean",
+        "label": "Hover & switcher · Recent projects in the switcher",
+        "defaultValue": true
+      },
+      {
+        "key": "projectRoots",
+        "type": "string",
+        "label": "Hover & switcher · Project folders to index",
+        "defaultValue": "~/Projects",
+        "description": "Comma-separated folders whose immediate subfolders appear in the switcher (empty turns the index off)."
+      },
+      {
+        "key": "recentIgnore",
+        "type": "string",
+        "label": "Hover & switcher · Never list these folders",
+        "defaultValue": "/tmp/*, ~/.cache/*",
+        "description": "Comma-separated folder patterns (* matches anything), e.g. ~/.t3/scratch/*."
+      },
+      {
+        "key": "agentCommand",
+        "type": "string",
+        "label": "Hover & switcher · Agent command (Ctrl+G)",
+        "defaultValue": "claude",
+        "description": "What the switcher's Agent action runs in a terminal in the project's folder."
+      },
+      {
+        "key": "maxWidthPercent",
+        "type": "integer",
+        "label": "Advanced · Room for names (% of screen width)",
+        "min": 10,
+        "max": 90,
+        "step": 5,
+        "defaultValue": 40
+      },
+      {
+        "key": "maxLength",
+        "type": "integer",
+        "label": "Advanced · Max name length",
+        "min": 6,
+        "max": 32,
+        "step": 1,
+        "defaultValue": 12,
+        "description": "Longer names are cut with … (\"repo · label\" keeps the label)."
+      },
+      {
+        "key": "longCommandSeconds",
+        "type": "integer",
+        "label": "Advanced · Long command threshold (seconds)",
+        "defaultValue": 30,
+        "min": 1,
+        "max": 3600,
+        "step": 1,
+        "description": "Show other foreground commands after this long. Known builds and tests show as soon as they are sampled."
+      },
+      {
+        "key": "renameDelay",
+        "type": "integer",
+        "label": "Advanced · Rename delay (seconds)",
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "For focus and background changes only. A change in the window you're using shows as soon as Signpost sees it."
+      },
+      {
+        "key": "sources",
+        "type": "multiselect",
+        "label": "Advanced · Name sources",
+        "noSelectionText": "All sources",
+        "description": "Leave empty to use every source.",
+        "defaultValue": [
+          "agents",
+          "projects",
+          "ssh",
+          "models",
+          "titleRules",
+          "webapps",
+          "apps"
+        ],
+        "options": [
+          {
+            "value": "agents",
+            "label": "AI agents"
+          },
+          {
+            "value": "projects",
+            "label": "Git repos & folders"
+          },
+          {
+            "value": "ssh",
+            "label": "ssh sessions"
+          },
+          {
+            "value": "models",
+            "label": "Local models"
+          },
+          {
+            "value": "titleRules",
+            "label": "App title rules"
+          },
+          {
+            "value": "webapps",
+            "label": "Web apps"
+          },
+          {
+            "value": "apps",
+            "label": "App names"
+          }
+        ]
+      }
+    ]
+  },
+  "tags": [
+    "workspaces",
+    "hyprland",
+    "agents",
+    "git",
+    "productivity"
+  ]
+}
