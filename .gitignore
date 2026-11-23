@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Compiled QML
+*.qmlc
+*.jsc
+
+# Editor and temp files
+*.tmp
+*.swp
+*.swo
+*~
+*.orig
+
+# Local drafts, mockups and videos (not part of the plugin)
+local/

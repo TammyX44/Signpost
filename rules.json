@@ -1,0 +1,82 @@
+{
+  "_comment": "Signpost name rules. Add your own in ~/.config/signpost/rules.json: lists are prepended, objects are merged.",
+
+  "agents": {
+    "claude":       { "label": "Claude Code", "logo": "claude" },
+    "codex":        { "label": "Codex",       "logo": "openai" },
+    "opencode":     { "label": "OpenCode" },
+    "gemini":       { "label": "Gemini CLI" },
+    "aider":        { "label": "Aider" },
+    "goose":        { "label": "Goose" },
+    "crush":        { "label": "Crush" },
+    "amp":          { "label": "Amp" },
+    "cursor-agent": { "label": "Cursor Agent" },
+    "pi":           { "label": "pi", "exact": true }
+  },
+
+  "scriptHints": {
+    "@anthropic-ai/claude-code": "claude",
+    "@openai/codex": "codex",
+    "opencode-ai": "opencode",
+    "@google/gemini-cli": "gemini"
+  },
+
+  "models": {
+    "ollama":       { "label": "Ollama",    "logo": "ollama", "after": "run" },
+    "llama-server": { "label": "llama.cpp", "flag": "-m" },
+    "llama-cli":    { "label": "llama.cpp", "flag": "-m" },
+    "vllm":         { "label": "vLLM",      "after": "serve" }
+  },
+
+  "appNames": {
+    "Visual Studio Code": "VS Code",
+    "Visual Studio Code - Insiders": "VS Code Insiders",
+    "T3 Code (Nightly)": "T3 Code",
+    "T3 Code (Alpha)": "T3 Code",
+    "Brave Origin (nightly)": "Brave Origin"
+  },
+
+  "remotes": ["ssh", "mosh", "et"],
+  "editors": ["nvim", "vim", "vi", "hx", "helix", "kak", "emacs", "micro", "nano"],
+  "interpreters": ["node", "bun", "deno", "python", "python3", "uv", "npx", "bunx"],
+
+  "terminals": ["kitty", "alacritty", "foot", "footclient", "com.mitchellh.ghostty", "ghostty",
+                "org.wezfurlong.wezterm", "wezterm-gui", "org.gnome.console", "org.gnome.terminal", "gnome-terminal-server",
+                "org.kde.konsole", "konsole", "xterm", "st", "st-256color"],
+
+  "meaningless": ["~", "/", "/tmp", "/var/tmp", "$XDG_RUNTIME_DIR"],
+
+  "commands": [
+    {
+      "kind": "test",
+      "pattern": "^(?:cargo test|(?:npm|pnpm|yarn|bun) (?:run )?test|pytest|python(?:3(?:\\.\\d+)?) -m pytest|go test|(?:gradle|gradlew|mvn|mvnw) test|make (?:test|check)|ctest)(?: |$)"
+    },
+    {
+      "kind": "build",
+      "pattern": "^(?:cargo build|(?:npm|pnpm|yarn|bun) (?:run )?build|make|ninja|cmake --build|go build|gradle|gradlew|mvn|mvnw|tsc|vite build|meson compile)(?: |$)"
+    }
+  ],
+  "commandIgnore": [
+    "^(?:ssh|mosh|mosh-client|et|nvim|vim|vi|hx|helix|kak|emacs|micro|nano|less|more|most|man|watch|tail|top|htop|btop|lazygit|lazydocker|fzf|ipython|bpython|ptpython|irb|psql|mysql|sqlite3|julia|R)(?: |$)",
+    "^(?:python(?:3(?:\\.\\d+)?)?|node|bun|deno|lua|ruby)(?: -i(?: |$)| -q$|$)",
+    "^(?:(?:npm|pnpm|yarn|bun) (?:run )?(?:dev|start|serve|preview)|vite(?: (?:dev|serve|preview)|$)|next dev|astro dev|nuxt dev|uvicorn|gunicorn|flask run|python(?:3)? -m http\\.server|ollama serve)(?: |$)",
+    "(?:.* )--watch(?: |$)"
+  ],
+
+  "unread": {
+    "whatsapp": {
+      "class": "^[a-z][a-z-]*?-web\\.whatsapp\\.com__-[A-Za-z0-9_-]+$",
+      "unread": "^[(](?P<count>[0-9]{1,9})[)] WhatsApp$"
+    }
+  },
+
+  "titleRules": [
+    { "class": "^com\\.t3tools\\.T3Code$", "pattern": "^(?P<project>[^/]+?) / ", "name": "{project}", "kind": "agentHost" },
+    { "class": "(^|\\.)obsidian$", "pattern": "^(?:.* - )?(?P<vault>[^-]+?) - Obsidian v?[\\d.]+$", "name": "Obsidian · {vault}", "kind": "title" },
+    { "class": "^(code|code-oss|codium|vscodium|cursor)$", "pattern": "^(?:● )?(?:.+? - )?(?P<project>[^-]+?) - (?:Visual Studio Code|VSCodium|Code - OSS|Cursor)$", "name": "{project}", "kind": "project" },
+    { "class": "^dev\\.zed\\.Zed", "pattern": "^(?P<project>[^—]+?)(?: — .*)?$", "name": "{project}", "kind": "project" },
+    { "class": "^jetbrains-", "pattern": "^(?P<project>[^–]+?) – ", "name": "{project}", "kind": "project" },
+    { "class": "^[a-z][a-z-]*?-(?:www\\.)?figma\\.com__", "pattern": "^(?P<file>.+?)\\s+[-–—]\\s+Figma$", "name": "Figma · {file}", "kind": "title" },
+    { "class": "^libreoffice", "pattern": "^(?P<doc>.+?)(?:\\.[A-Za-z0-9]{2,5})? - LibreOffice", "name": "{doc}", "kind": "title" }
+  ]
+}
