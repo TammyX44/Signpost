@@ -4221,15 +4221,44 @@ def explain_lines(snapshot):
     return lines
 
 
+def portal_streams(run=subprocess.run, which=shutil.which):
+    """How many screen-share streams the desktop portal has open right now: a number, or None when PipeWire
+    is there but would not say.
+
+    Hyprland's event socket reports a share when it starts and when it stops. It does not replay the start to
+    a watcher that connects later, so the events alone cannot show a share that began before Signpost did.
+    The portal publishes each share as a PipeWire node named xdph-streaming-…, and that outlasts the event.
+    Without pw-dump there is nothing to ask, and only the events are left (0 here, with a warning at start)."""
+    if not which("pw-dump"):
+        return 0
+    try:
+        r = run(["pw-dump"], capture_output=True, text=True, timeout=4)
+        objects = json.loads(r.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if r.returncode != 0 or not isinstance(objects, list):
+        return None
+    count = 0
+    for obj in objects:
+        info = obj.get("info") if isinstance(obj, dict) else None
+        props = info.get("props") if isinstance(info, dict) else None
+        if isinstance(props, dict) and str(props.get("node.name") or "").startswith("xdph-streaming"):
+            count += 1
+    return count
+
+
 class Daemon:
     TICK = 0.5   # how often the agent files and git lookups are checked
+    STREAMS_EVERY = 5.0   # how often PipeWire is asked about screen shares
+    STREAMS_RETRY = 2.0   # ...and how soon again when it would not say
     COALESCE = 0.04  # events that arrive together (a workspace switch sends several) are handled once
     EVENTS = {"openwindow", "closewindow", "movewindowv2", "movewindow", "workspacev2", "workspace", "focusedmonv2",
               "createworkspacev2", "destroyworkspacev2", "moveworkspacev2", "changefloatingmode", "configreloaded",
               "activewindowv2", "windowtitlev2"}
 
-    def __init__(self, engine):
+    def __init__(self, engine, streams=portal_streams):
         self.e = engine
+        self.probe_streams = streams
         self.sel = selectors.DefaultSelector()
         self.sock = None
         self.buf = b""
@@ -4240,7 +4269,10 @@ class Daemon:
         now = time.monotonic()
         self.next_poll = now + engine.settings["pollSeconds"]
         self.next_full = now + engine.settings["fullSeconds"]
-        self.casts = {}
+        self.casts = {}           # screen shares Hyprland has announced since we connected, by what is shared
+        self.streams = 0          # shares the portal has open, as PipeWire last said; None: it would not say
+        self.next_streams = now   # when to ask PipeWire again
+        self.warned_streams = False
         self.last_out = None
         self.reconnect_at = 0.0
         self.next_tick = now + self.TICK
@@ -4251,7 +4283,29 @@ class Daemon:
         self.monitor = None       # gdbus watching for button presses on those notifications
         self.mon_buf = b""
 
+    def sharing(self):
+        """Is the screen possibly being shared? Yes when Hyprland announced a share, when the portal has a
+        stream open, and when we cannot tell: showing names by mistake costs more than hiding them."""
+        return bool(self.casts) or self.streams is None or self.streams > 0
+
+    def check_streams(self, now):
+        """Ask PipeWire about open shares. Catches one that began before we started, or while the event socket
+        was down; both left the events with nothing to report."""
+        found = self.probe_streams()
+        if found is None:
+            if not self.warned_streams:
+                self.warned_streams = True
+                warn("pw-dump did not answer; names stay hidden until screen-share detection works "
+                     "(or set hideWhenSharing to false)")
+            # Keep the last answer through a hiccup; before any answer, `streams` is still None.
+            self.next_streams = now + self.STREAMS_RETRY
+            return
+        self.warned_streams = False
+        self.streams = found
+        self.next_streams = now + self.STREAMS_EVERY
+
     def connect(self):
+        self.next_streams = 0.0   # events may have been missed while the socket was down: ask PipeWire now
         d = hypr_dir()
         if not d:
             return
@@ -4269,7 +4323,7 @@ class Daemon:
     def emit(self, force=False):
         """One line, only when something on the bar would change."""
         snap = self.e.snapshot()
-        snap["sharing"] = bool(self.casts)
+        snap["sharing"] = self.sharing()
         key = json.dumps({k: v for k, v in snap.items() if k != "probeMs"}, sort_keys=True, ensure_ascii=False)
         if force or key != self.last_out:
             self.last_out = key
@@ -4299,10 +4353,14 @@ class Daemon:
         except (ValueError, OSError):
             pass
         self.log(self.e.recompute("all", force=True, active=self.active))
+        # The first line the bar sees must already know about a share that is running: Hyprland does not
+        # replay its start. Until PipeWire has answered, assume one is.
+        self.streams = None
+        self.check_streams(time.monotonic())
         self.emit(force=True)
         while True:
             now = time.monotonic()
-            deadlines = [self.next_poll, self.next_full, self.next_tick]
+            deadlines = [self.next_poll, self.next_full, self.next_tick, self.next_streams]
             if self.due is not None:
                 deadlines.append(self.due)
             nd = self.e.holder.next_due()
@@ -4333,6 +4391,8 @@ class Daemon:
                 self.next_poll = now + self.e.settings["pollSeconds"]
                 self.log(self.e.recompute("poll", active=self.active))
             self.e.holder.tick(now)
+            if now >= self.next_streams:
+                self.check_streams(now)
             if now >= self.next_tick:
                 self.next_tick = now + self.TICK
                 self.tick_agents()
@@ -4355,7 +4415,7 @@ class Daemon:
             self.offer_swap()
             return
         fresh = [s for s in fresh if not s.get("old")]     # already waiting when Claude Code's list was first read
-        if not fresh or not self.e.settings["alerts"] or self.casts:
+        if not fresh or not self.e.settings["alerts"] or self.sharing():
             return
         rows = {}
         rows_by_ws = {}
@@ -4674,6 +4734,9 @@ def main(argv):
     ws_arg = opt("--ws")
     engine = Engine(settings)
     if cmd == "watch":
+        if not shutil.which("pw-dump"):
+            warn("pw-dump not found: a screen share that began before Signpost started cannot be detected "
+                 "(install PipeWire's command-line tools)")
         daemon = Daemon(engine)
         # The widget stops us with SIGTERM. Leave through the normal door so the watcher process goes too.
         for sig in (signal.SIGTERM, signal.SIGHUP):

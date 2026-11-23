@@ -910,11 +910,15 @@ class AlertFlow(unittest.TestCase):
 
     def test_quiet_when_you_are_looking_sharing_or_have_it_off(self):
         from unittest.mock import patch
-        for name, here, casts, notify in (("looking", 3, {}, True), ("sharing", 1, {"x": 1}, True), ("off", 1, {}, False)):
+        for name, here, casts, streams, notify in (
+                ("looking", 3, {}, 0, True), ("sharing", 1, {"x": 1}, 0, True),
+                ("share found through the portal", 1, {}, 1, True), ("pipewire silent", 1, {}, None, True),
+                ("off", 1, {}, 0, False)):
             with self.subTest(name), tempfile.TemporaryDirectory() as d:
                 daemon = self.daemon(d)
                 daemon.e.settings = {**daemon.e.settings, "alerts": notify}
                 daemon.casts = casts
+                daemon.streams = streams
                 sent = []
                 daemon.notify = lambda *a: sent.append(a[:3])
                 daemon.primed = True
@@ -1309,6 +1313,139 @@ class Activity(unittest.TestCase):
             self.assertEqual(last, last2)                         # remembers when it was last busy
         finally:
             sp.time.monotonic = real
+
+
+class PortalStreams(unittest.TestCase):
+    """What `pw-dump` says about screen shares. Hyprland's event socket never replays a share's start."""
+
+    which = staticmethod(lambda name: "/usr/bin/pw-dump")
+
+    @staticmethod
+    def dump(*names, code=0, out=None):
+        nodes = [{"type": "PipeWire:Interface:Node", "info": {"props": {"node.name": n}}} for n in names]
+        text = json.dumps(nodes) if out is None else out
+        return lambda *a, **k: Mock(stdout=text, returncode=code)
+
+    def count(self, run):
+        return sp.portal_streams(run=run, which=self.which)
+
+    def test_counts_only_the_portals_streams(self):
+        run = self.dump("alsa_output.speaker", "xdph-streaming-1a2b", "xdph-streaming-3c4d", "v4l2_input.cam")
+        self.assertEqual(self.count(run), 2)
+        self.assertEqual(self.count(self.dump("alsa_output.speaker")), 0)
+        self.assertEqual(self.count(self.dump()), 0)
+
+    def test_objects_without_props_are_skipped(self):
+        run = self.dump(out=json.dumps([{"type": "PipeWire:Interface:Core"}, "stray", None,
+                                        {"info": {"props": None}}, {"info": {"props": {"node.name": None}}}]))
+        self.assertEqual(self.count(run), 0)
+
+    def test_none_when_pipewire_is_there_but_will_not_say(self):
+        self.assertIsNone(self.count(self.dump("xdph-streaming-1", code=1)))
+        self.assertIsNone(self.count(self.dump(out="not json")))
+        self.assertIsNone(self.count(self.dump(out="{}")))
+
+        def hang(*a, **k):
+            raise subprocess.TimeoutExpired("pw-dump", 4)
+
+        def gone(*a, **k):
+            raise OSError("no such file")
+        self.assertIsNone(self.count(hang))
+        self.assertIsNone(self.count(gone))
+
+    def test_without_pw_dump_only_the_events_are_left(self):
+        run = Mock(side_effect=AssertionError("must not run"))
+        self.assertEqual(sp.portal_streams(run=run, which=lambda name: None), 0)
+
+
+class ShareAlreadyRunning(unittest.TestCase):
+    """A watcher that starts, restarts or reconnects mid-share must not show names until it has looked."""
+
+    def daemon(self, probe):
+        warning = patch.object(sp, "warn")
+        warning.start()
+        self.addCleanup(warning.stop)
+        daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=probe)
+        self.addCleanup(daemon.sel.close)
+        return daemon
+
+    def first_snapshot(self, daemon):
+        """Start the watch loop and return the first thing it tells the bar."""
+        class Stop(Exception):
+            pass
+        sent = []
+
+        def send(message):
+            sent.append(message)
+            raise Stop
+        daemon.send = send
+        daemon.e.recompute = lambda *a, **k: []
+        daemon.e.snapshot = lambda: {"workspaces": []}
+        with patch.object(sp, "reap_stale_monitors"), patch.object(sp, "active_window", return_value=None), \
+                patch.object(sp, "hypr_dir", return_value=None), self.assertRaises(Stop):
+            daemon.run()
+        return sent[0]
+
+    def test_the_first_line_hides_names_when_a_share_began_before_we_did(self):
+        daemon = self.daemon(lambda: 1)
+        first = self.first_snapshot(daemon)
+        self.assertTrue(first["sharing"])
+        self.assertFalse(daemon.casts)        # no event was ever seen: this came from the portal
+
+    def test_the_first_line_shows_names_when_nothing_is_shared(self):
+        self.assertFalse(self.first_snapshot(self.daemon(lambda: 0))["sharing"])
+
+    def test_the_first_line_assumes_a_share_when_pipewire_will_not_say(self):
+        daemon = self.daemon(lambda: None)
+        self.assertTrue(self.first_snapshot(daemon)["sharing"])
+        self.assertTrue(daemon.warned_streams)
+
+    def test_names_come_back_once_pipewire_answers(self):
+        answers = iter([None, 0])
+        daemon = self.daemon(lambda: next(answers))
+        daemon.streams = None
+        daemon.check_streams(100.0)
+        self.assertTrue(daemon.sharing())
+        self.assertEqual(daemon.next_streams, 100.0 + daemon.STREAMS_RETRY)
+        daemon.check_streams(102.0)
+        self.assertFalse(daemon.sharing())
+        self.assertEqual(daemon.next_streams, 102.0 + daemon.STREAMS_EVERY)
+        self.assertFalse(daemon.warned_streams)
+
+    def test_one_failed_look_after_an_answer_does_not_flip_the_bar(self):
+        answers = iter([0, None, 1])
+        daemon = self.daemon(lambda: next(answers))
+        daemon.streams = None
+        daemon.check_streams(0.0)
+        daemon.check_streams(5.0)
+        self.assertFalse(daemon.sharing())    # kept the last answer through the hiccup
+        self.assertEqual(daemon.next_streams, 5.0 + daemon.STREAMS_RETRY)
+        daemon.check_streams(7.0)
+        self.assertTrue(daemon.sharing())
+
+    def test_a_share_that_ends_is_noticed_without_any_event(self):
+        answers = iter([2, 0])
+        daemon = self.daemon(lambda: next(answers))
+        daemon.check_streams(0.0)
+        self.assertTrue(daemon.sharing())
+        daemon.check_streams(5.0)
+        self.assertFalse(daemon.sharing())
+
+    def test_either_source_alone_is_enough_to_hide(self):
+        daemon = self.daemon(lambda: 0)
+        self.assertFalse(daemon.sharing())
+        daemon.casts = {"monitor": 1}
+        self.assertTrue(daemon.sharing())
+        daemon.casts = {}
+        daemon.streams = 1
+        self.assertTrue(daemon.sharing())
+
+    def test_reconnecting_the_event_socket_asks_pipewire_again(self):
+        daemon = self.daemon(lambda: 0)
+        daemon.next_streams = 999.0
+        with patch.object(sp, "hypr_dir", return_value=None):
+            daemon.connect()
+        self.assertEqual(daemon.next_streams, 0.0)
 
 
 class Commands(unittest.TestCase):

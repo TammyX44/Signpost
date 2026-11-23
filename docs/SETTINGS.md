@@ -20,7 +20,7 @@ Change settings in your Omarchy settings app, or in the widget's entry in `~/.co
 | `badgeStates` | all | `working`, `needsYou`, `ready`. These also filter terminal commands |
 | `alerts` | `true` | The desktop alert when a supported agent needs you |
 | `showQuestions` | `true` | Off: the alert, hover card and switcher only say that it needs you, not what it asked |
-| `hideWhenSharing` | `true` | Numbers only while your screen is shared |
+| `hideWhenSharing` | `true` | Numbers only while your screen is shared, including a share that began before Signpost started |
 | **Activity** | | |
 | `commandStatus` | `true` | Show terminal command activity |
 | `unreadApps` | `[]` | Apps whose title counts can appear |

@@ -119,7 +119,7 @@ See [`docs/AGENTS.md`](docs/AGENTS.md) for per-agent setup, opt-in terminal pass
 
 ## Privacy
 
-Everything runs locally and nothing is sent anywhere. Files written by Signpost are readable by you only (folders `0700`, files `0600`). The switcher runs `git` only while open, with hooks, `core.fsmonitor`, external diff, textconv, filters and transports switched off (needs git 2.40+, or set `switcherGit` to `never`). Turn off `showQuestions` to keep prompt text out of alerts and UI; names and alerts hide automatically during screen sharing. See [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) for the full file list and git safety details.
+Everything runs locally and nothing is sent anywhere. Files written by Signpost are readable by you only (folders `0700`, files `0600`). The switcher runs `git` only while open, with hooks, `core.fsmonitor`, external diff, textconv, filters and transports switched off (needs git 2.40+, or set `switcherGit` to `never`). Turn off `showQuestions` to keep prompt text out of alerts and UI; names and alerts hide automatically during screen sharing, including a share that was already running when Signpost started (this uses `pw-dump` from PipeWire). See [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) for the full file list and git safety details.
 
 ## Requirements
 
