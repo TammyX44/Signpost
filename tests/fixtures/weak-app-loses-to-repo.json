@@ -1,0 +1,64 @@
+{
+  "name": "weak-app-loses-to-repo",
+  "about": "Spotify was used last, but a plain app name is weak, so the repo in the terminal wins.",
+  "facts": [
+    {
+      "address": "0xc1",
+      "class": "com.spotify.Client",
+      "title": "Spotify Premium",
+      "pid": 900,
+      "workspace": 5,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "Spotify",
+        "icon": "spotify-client",
+        "desktop": "spotify",
+        "webapp": false
+      },
+      "agents": []
+    },
+    {
+      "address": "0xc2",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 5,
+      "focus": 1,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/OmaWidgets",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/OmaWidgets",
+            "main": "$HOME/Projects/OmaWidgets",
+            "repo": "OmaWidgets",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "5": {
+      "name": "OmaWidgets",
+      "source": "project",
+      "more": 0
+    }
+  }
+}

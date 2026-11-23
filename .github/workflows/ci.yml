@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate manifest.json and rules.json
+        run: |
+          python3 -c "import json; json.load(open('manifest.json')); json.load(open('rules.json'))"
+
+      - name: Run engine tests
+        run: python3 -I -m unittest discover -s tests -v
+
+      - name: Run switcher ranking tests
+        run: node --test tests/test_rank.js

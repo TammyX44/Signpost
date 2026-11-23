@@ -1,0 +1,40 @@
+{
+  "name": "home-terminal-alone",
+  "about": "Only a terminal in ~: the app name.",
+  "facts": [
+    {
+      "address": "0x21",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 1,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "1": {
+      "name": "kitty",
+      "source": "app",
+      "more": 0
+    }
+  }
+}

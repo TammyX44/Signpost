@@ -1,0 +1,33 @@
+{
+  "name": "markup-in-title-is-text",
+  "about": "A web page title with markup and control characters is cleaned, never rendered.",
+  "facts": [
+    {
+      "address": "0x61",
+      "class": "obsidian",
+      "title": "x - <b>vault</b>\u0007 - Obsidian v1.0",
+      "pid": 801,
+      "workspace": 7,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "Obsidian",
+        "icon": "obsidian",
+        "desktop": "obsidian",
+        "webapp": false
+      },
+      "agents": []
+    }
+  ],
+  "settings": {
+    "maxLength": 32
+  },
+  "expect": {
+    "7": {
+      "name": "Obsidian · <b>vault</b>",
+      "source": "title",
+      "more": 0
+    }
+  }
+}

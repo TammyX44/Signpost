@@ -1,0 +1,74 @@
+{
+  "name": "plain-folder-is-weak",
+  "about": "~/Downloads is a folder, not a repo: weak, so the repo on the same workspace wins.",
+  "facts": [
+    {
+      "address": "0x31",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 2,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Downloads",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    },
+    {
+      "address": "0x32",
+      "class": "kitty",
+      "title": "",
+      "pid": 4122,
+      "workspace": 2,
+      "focus": 1,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/omaglimpse/src",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/omaglimpse",
+            "main": "$HOME/Projects/omaglimpse",
+            "repo": "omaglimpse",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "2": {
+      "name": "omaglimpse",
+      "source": "project",
+      "more": 0
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "name": "kitty-agent-in-worktree",
+  "about": "Claude Code in a kitty tab inside a worktree: repo · worktree, label kept when shortened.",
+  "facts": [
+    {
+      "address": "0xb1",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 1,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/Starling-wt-d1",
+          "git": {
+            "kind": "worktree",
+            "root": "$HOME/Projects/Starling-wt-d1",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": "d1",
+            "branch": "landing/smooth"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": {
+            "prog": "claude",
+            "argv": [
+              "claude"
+            ],
+            "cwd": "$HOME/Projects/Starling-wt-d1",
+            "git": {
+              "kind": "worktree",
+              "root": "$HOME/Projects/Starling-wt-d1",
+              "main": "$HOME/Projects/Starling",
+              "repo": "Starling",
+              "label": "d1",
+              "branch": "landing/smooth"
+            },
+            "agent": {
+              "agent": "claude",
+              "label": "Claude Code",
+              "pid": 6100,
+              "cwd": "$HOME/Projects/Starling-wt-d1",
+              "git": {
+                "kind": "worktree",
+                "root": "$HOME/Projects/Starling-wt-d1",
+                "main": "$HOME/Projects/Starling",
+                "repo": "Starling",
+                "label": "d1",
+                "branch": "landing/smooth"
+              },
+              "start": 100,
+              "busy": false,
+              "lastActive": 0,
+              "logo": "claude"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "1": {
+      "name": "Starli… · d1",
+      "source": "agent",
+      "more": 0
+    }
+  }
+}

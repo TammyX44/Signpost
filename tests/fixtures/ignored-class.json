@@ -1,0 +1,31 @@
+{
+  "name": "ignored-class",
+  "about": "ignoreClasses removes a window from naming.",
+  "settings": {
+    "ignoreClasses": "com.spotify.Client"
+  },
+  "facts": [
+    {
+      "address": "0x71",
+      "class": "com.spotify.Client",
+      "title": "Spotify",
+      "pid": 902,
+      "workspace": 4,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "Spotify",
+        "icon": "spotify-client",
+        "desktop": "spotify",
+        "webapp": false
+      },
+      "agents": []
+    }
+  ],
+  "expect": {
+    "4": {
+      "name": null
+    }
+  }
+}

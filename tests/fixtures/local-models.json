@@ -1,0 +1,93 @@
+{
+  "name": "local-models",
+  "about": "ollama run qwen3:8b and llama-server -m *.gguf",
+  "facts": [
+    {
+      "address": "0xf1",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 7,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": {
+            "prog": "ollama",
+            "argv": [
+              "ollama",
+              "run",
+              "qwen3:8b"
+            ],
+            "cwd": "$HOME",
+            "git": null
+          }
+        }
+      ]
+    },
+    {
+      "address": "0xf2",
+      "class": "kitty",
+      "title": "",
+      "pid": 4122,
+      "workspace": 8,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": {
+            "prog": "llama-server",
+            "argv": [
+              "llama-server",
+              "-m",
+              "$HOME/models/gemma-3-12b-it-Q4_K_M.gguf"
+            ],
+            "cwd": "$HOME",
+            "git": null
+          }
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "maxLength": 28
+  },
+  "expect": {
+    "7": {
+      "name": "Ollama · qwen3",
+      "source": "model",
+      "more": 0
+    },
+    "8": {
+      "name": "llama.cpp · gemma-3-12b-it",
+      "source": "model",
+      "more": 0
+    }
+  }
+}

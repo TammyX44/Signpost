@@ -1,0 +1,67 @@
+{
+  "name": "agent-host-most-recently-busy",
+  "about": "No title hint: the agent that was busy most recently wins; the other project is +1.",
+  "facts": [
+    {
+      "address": "0xa1",
+      "class": "com.t3tools.T3Code",
+      "title": "T3 Code",
+      "pid": 97318,
+      "workspace": 2,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "T3 Code",
+        "icon": "t3code",
+        "desktop": "t3code",
+        "webapp": false
+      },
+      "agents": [
+        {
+          "agent": "codex",
+          "label": "Codex",
+          "pid": 6300,
+          "cwd": "$HOME/Projects/admin-mobile",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/admin-mobile",
+            "main": "$HOME/Projects/admin-mobile",
+            "repo": "admin-mobile",
+            "label": null,
+            "branch": "main"
+          },
+          "start": 300,
+          "busy": false,
+          "lastActive": 10,
+          "logo": "openai"
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "pid": 6100,
+          "cwd": "$HOME/Projects/Starling-wt-d1",
+          "git": {
+            "kind": "worktree",
+            "root": "$HOME/Projects/Starling-wt-d1",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": "d1",
+            "branch": "landing/smooth"
+          },
+          "start": 100,
+          "busy": false,
+          "lastActive": 90,
+          "logo": "claude"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "2": {
+      "name": "Starli… · d1",
+      "source": "agent",
+      "more": 1
+    }
+  }
+}

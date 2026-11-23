@@ -1,0 +1,55 @@
+{
+  "name": "obsidian-title-rule",
+  "about": "Obsidian's title names the vault: AUR build (class obsidian, 'Obsidian v1.9') and Flatpak (md.obsidian.Obsidian, 'Obsidian 1.15.0').",
+  "facts": [
+    {
+      "address": "0x51",
+      "class": "obsidian",
+      "title": "Signpost ideas - notes - Obsidian v1.9.10",
+      "pid": 800,
+      "workspace": 7,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "Obsidian",
+        "icon": "obsidian",
+        "desktop": "obsidian",
+        "webapp": false
+      },
+      "agents": []
+    },
+    {
+      "address": "0x52",
+      "class": "md.obsidian.Obsidian",
+      "title": "Today - Starling Plans - Obsidian 1.15.0",
+      "pid": 800,
+      "workspace": 8,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "Obsidian",
+        "icon": "obsidian",
+        "desktop": "obsidian",
+        "webapp": false
+      },
+      "agents": []
+    }
+  ],
+  "settings": {
+    "maxLength": 28
+  },
+  "expect": {
+    "7": {
+      "name": "Obsidian · notes",
+      "source": "title",
+      "more": 0
+    },
+    "8": {
+      "name": "Obsidian · Starling Plans",
+      "source": "title",
+      "more": 0
+    }
+  }
+}

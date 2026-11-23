@@ -1,0 +1,63 @@
+{
+  "name": "kitty-tabs-disagree",
+  "about": "Two tabs in different repos and a title that names neither: show the app, never guess.",
+  "facts": [
+    {
+      "address": "0xd1",
+      "class": "kitty",
+      "title": "zsh",
+      "pid": 4121,
+      "workspace": 4,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/omaglimpse",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/omaglimpse",
+            "main": "$HOME/Projects/omaglimpse",
+            "repo": "omaglimpse",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 3,
+          "fg": null
+        },
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/admin-mobile",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/admin-mobile",
+            "main": "$HOME/Projects/admin-mobile",
+            "repo": "admin-mobile",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/4",
+          "idle": 5,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "4": {
+      "name": "kitty",
+      "source": "app",
+      "more": 2
+    }
+  }
+}

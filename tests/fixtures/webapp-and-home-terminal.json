@@ -1,0 +1,57 @@
+{
+  "name": "webapp-and-home-terminal",
+  "about": "A web app names itself; a terminal in ~ says nothing, so it doesn't beat it.",
+  "facts": [
+    {
+      "address": "0x11",
+      "class": "chrome-web.whatsapp.com__-Default",
+      "title": "(3) WhatsApp",
+      "pid": 700,
+      "workspace": 3,
+      "focus": 1,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "WhatsApp",
+        "icon": "whatsapp",
+        "desktop": "WhatsApp",
+        "webapp": true
+      },
+      "agents": []
+    },
+    {
+      "address": "0x12",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 3,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "3": {
+      "name": "WhatsApp",
+      "source": "webapp",
+      "more": 0
+    }
+  }
+}

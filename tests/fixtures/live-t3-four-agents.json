@@ -1,0 +1,115 @@
+{
+  "name": "live-t3-four-agents",
+  "note": "Contains window titles and folder paths. Check before sharing.",
+  "signpost": "0.1.0",
+  "settings": {
+    "maxLength": 12,
+    "sources": [
+      "agents",
+      "projects",
+      "ssh",
+      "models",
+      "titleRules",
+      "webapps",
+      "apps"
+    ],
+    "ignoreClasses": ""
+  },
+  "state": {
+    "pins": {},
+    "aliases": {}
+  },
+  "facts": [
+    {
+      "address": "0x55bc44e74110",
+      "class": "com.t3tools.T3Code",
+      "title": "Starling / Fix the Login Flow and Add Tests",
+      "pid": 97318,
+      "workspace": 3,
+      "focus": 1,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "T3 Code (Nightly)",
+        "icon": "$HOME/.local/share/icons/com.t3tools.T3Code.desktop.png",
+        "desktop": "com.t3tools.T3Code",
+        "webapp": false
+      },
+      "agents": [
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 215360,
+          "cwd": "$HOME/Projects/Signpost",
+          "git": null,
+          "start": 627011,
+          "busy": false,
+          "lastActive": 0.0
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 215449,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "corrections/admin-mobile"
+          },
+          "start": 627046,
+          "busy": false,
+          "lastActive": 0.0
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 217193,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "corrections/admin-mobile"
+          },
+          "start": 631456,
+          "busy": false,
+          "lastActive": 0.0
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 268542,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "corrections/admin-mobile"
+          },
+          "start": 727392,
+          "busy": false,
+          "lastActive": 0.0
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "3": {
+      "name": "Starling",
+      "source": "agent",
+      "more": 1
+    }
+  },
+  "about": "Captured from the author's desktop: T3 Code with four Claude agents (three in Starling, one in Signpost)."
+}

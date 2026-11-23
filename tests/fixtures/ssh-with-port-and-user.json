@@ -1,0 +1,50 @@
+{
+  "name": "ssh-with-port-and-user",
+  "about": "ssh -p 2222 dev@vps → ssh · vps",
+  "facts": [
+    {
+      "address": "0xe1",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 6,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME",
+          "git": null,
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": {
+            "prog": "ssh",
+            "argv": [
+              "ssh",
+              "-p",
+              "2222",
+              "dev@vps"
+            ],
+            "cwd": "$HOME",
+            "git": null
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "6": {
+      "name": "ssh · vps",
+      "source": "ssh",
+      "more": 0
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "name": "kitty-tabs-one-agent",
+  "about": "Two tabs; only one runs an agent, so it wins regardless of the title.",
+  "facts": [
+    {
+      "address": "0xd1",
+      "class": "kitty",
+      "title": "zsh",
+      "pid": 4121,
+      "workspace": 4,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/omaglimpse",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/omaglimpse",
+            "main": "$HOME/Projects/omaglimpse",
+            "repo": "omaglimpse",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 3,
+          "fg": null
+        },
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/OmaWidgets",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/OmaWidgets",
+            "main": "$HOME/Projects/OmaWidgets",
+            "repo": "OmaWidgets",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/4",
+          "idle": 40,
+          "fg": {
+            "prog": "codex",
+            "argv": [
+              "codex"
+            ],
+            "cwd": "$HOME/Projects/OmaWidgets",
+            "git": {
+              "kind": "repo",
+              "root": "$HOME/Projects/OmaWidgets",
+              "main": "$HOME/Projects/OmaWidgets",
+              "repo": "OmaWidgets",
+              "label": null,
+              "branch": "main"
+            },
+            "agent": {
+              "agent": "codex",
+              "label": "Codex",
+              "pid": 6100,
+              "cwd": "$HOME/Projects/OmaWidgets",
+              "git": {
+                "kind": "repo",
+                "root": "$HOME/Projects/OmaWidgets",
+                "main": "$HOME/Projects/OmaWidgets",
+                "repo": "OmaWidgets",
+                "label": null,
+                "branch": "main"
+              },
+              "start": 100,
+              "busy": false,
+              "lastActive": 0,
+              "logo": "openai"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "4": {
+      "name": "OmaWidgets",
+      "source": "agent",
+      "more": 1
+    }
+  }
+}

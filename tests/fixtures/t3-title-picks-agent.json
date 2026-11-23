@@ -1,0 +1,78 @@
+{
+  "name": "t3-title-picks-agent",
+  "about": "T3 Code runs four Claude agents; its title says which project is on screen. The Signpost agent is another project: +1.",
+  "facts": [
+    {
+      "address": "0xa1",
+      "class": "com.t3tools.T3Code",
+      "title": "Starling / Fix the Login Flow",
+      "pid": 97318,
+      "workspace": 3,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "T3 Code",
+        "icon": "t3code",
+        "desktop": "t3code",
+        "webapp": false
+      },
+      "agents": [
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "pid": 6400,
+          "cwd": "$HOME/Projects/Signpost",
+          "git": null,
+          "start": 400,
+          "busy": false,
+          "lastActive": 50,
+          "logo": "claude"
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "pid": 6100,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "main"
+          },
+          "start": 100,
+          "busy": false,
+          "lastActive": 0,
+          "logo": "claude"
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "pid": 6200,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "main"
+          },
+          "start": 200,
+          "busy": false,
+          "lastActive": 0,
+          "logo": "claude"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "3": {
+      "name": "Starling",
+      "source": "agent",
+      "more": 1
+    }
+  }
+}

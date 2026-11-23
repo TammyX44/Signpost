@@ -1,0 +1,101 @@
+{
+  "name": "pins-and-aliases",
+  "about": "A pin wins; an empty pinned workspace is planned; an alias renames the repo part of a worktree.",
+  "state": {
+    "pins": {
+      "8": "inbox",
+      "1": "focus"
+    },
+    "aliases": {
+      "$HOME/Projects/Starling": "card"
+    }
+  },
+  "facts": [
+    {
+      "address": "0x41",
+      "class": "kitty",
+      "title": "",
+      "pid": 4121,
+      "workspace": 1,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/omaglimpse",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/omaglimpse",
+            "main": "$HOME/Projects/omaglimpse",
+            "repo": "omaglimpse",
+            "label": null,
+            "branch": "main"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    },
+    {
+      "address": "0x42",
+      "class": "kitty",
+      "title": "",
+      "pid": 4122,
+      "workspace": 2,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "kitty",
+        "icon": "kitty",
+        "desktop": "kitty",
+        "webapp": false
+      },
+      "tabs": [
+        {
+          "shell": "zsh",
+          "pid": 5000,
+          "cwd": "$HOME/Projects/Starling-wt-d1",
+          "git": {
+            "kind": "worktree",
+            "root": "$HOME/Projects/Starling-wt-d1",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": "d1",
+            "branch": "landing/smooth"
+          },
+          "pts": "/dev/pts/3",
+          "idle": 4.0,
+          "fg": null
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "1": {
+      "name": "focus",
+      "source": "pinned",
+      "more": 0
+    },
+    "2": {
+      "name": "card · d1",
+      "source": "project",
+      "more": 0
+    },
+    "8": {
+      "name": "inbox",
+      "source": "pinned",
+      "more": 0,
+      "planned": true
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "t3-title-without-agent",
+  "about": "T3 Code shows an OmaWidgets thread, but no agent runs in OmaWidgets now: the title still names it; the running agents are +N.",
+  "facts": [
+    {
+      "address": "0xa1",
+      "class": "com.t3tools.T3Code",
+      "title": "OmaWidgets / Write the Release Notes",
+      "pid": 96549,
+      "workspace": 3,
+      "focus": 0,
+      "floating": false,
+      "shared": false,
+      "app": {
+        "name": "T3 Code",
+        "icon": "t3code",
+        "desktop": "t3code",
+        "webapp": false
+      },
+      "agents": [
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 7100,
+          "cwd": "$HOME/Projects/Starling",
+          "git": {
+            "kind": "repo",
+            "root": "$HOME/Projects/Starling",
+            "main": "$HOME/Projects/Starling",
+            "repo": "Starling",
+            "label": null,
+            "branch": "main"
+          },
+          "start": 100,
+          "busy": false,
+          "lastActive": 90
+        },
+        {
+          "agent": "claude",
+          "label": "Claude Code",
+          "logo": "claude",
+          "pid": 7200,
+          "cwd": "$HOME/Projects/Signpost",
+          "git": null,
+          "start": 200,
+          "busy": false,
+          "lastActive": 0
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "maxLength": 12
+  },
+  "expect": {
+    "3": {
+      "name": "OmaWidgets",
+      "source": "project",
+      "more": 2
+    }
+  }
+}
