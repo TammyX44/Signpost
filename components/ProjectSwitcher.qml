@@ -146,15 +146,27 @@ KeyboardPanel {
 
     property alias field: search
     property string selectedId: ""
+    property string selectedDirectory: ""     // what you picked, so it is found again under a new id
     readonly property var matches: panel.filter(search.text)
     readonly property var terms: search.text.trim().toLocaleLowerCase().split(/\s+/).filter(function(term) { return term.length > 0 })
+    // Nothing picked yet: the first row. A pick stays on its project as the list refreshes (an id names the
+    // workspace too, so a project that opens, closes or moves comes back by its folder). When it is gone,
+    // nothing is selected, so a key pressed at that moment can't act on whatever moved into its place.
     readonly property int selectedIndex: {
       if (!matches.length) return -1
-      return Math.max(0, matches.findIndex(function(project) { return project.id === body.selectedId }))
+      if (!body.selectedId) return 0
+      var at = matches.findIndex(function(project) { return project.id === body.selectedId })
+      if (at < 0 && body.selectedDirectory)
+        at = matches.findIndex(function(project) { return project.directory === body.selectedDirectory })
+      return at
     }
     readonly property var selected: selectedIndex >= 0 ? matches[selectedIndex] : null
     readonly property bool canRun: selected !== null && selected.directory !== ""
     readonly property bool canRemote: selected !== null && !!selected.remote
+    readonly property string remoteHost: {
+      var m = canRemote ? /^https:\/\/([A-Za-z0-9.-]+)\//.exec(String(selected.remote)) : null
+      return m ? m[1] : ""
+    }
     readonly property real rowHeight: Style.space(50)
     readonly property real headerHeight: Style.space(24)
     // A waiting agent's question gets its own line under the name, wrapping to two before it is cut.
@@ -207,6 +219,7 @@ KeyboardPanel {
     function reset() {
       search.clear()
       body.selectedId = ""
+      body.selectedDirectory = ""
       results.positionViewAtBeginning()
     }
 
@@ -221,6 +234,7 @@ KeyboardPanel {
       if (count === 0) return
       var next = (body.selectedIndex + step + count) % count
       body.selectedId = body.matches[next].id
+      body.selectedDirectory = body.matches[next].directory || ""
       body.reveal(next)
     }
 
@@ -266,6 +280,7 @@ KeyboardPanel {
         rightPadding: horizontalPadding + navHint.width + Style.space(6)
         onTextChanged: {
           body.selectedId = ""
+          body.selectedDirectory = ""
           panel.queryEdited()
           Qt.callLater(results.positionViewAtBeginning)
         }
@@ -609,7 +624,10 @@ KeyboardPanel {
             { kind: "terminal", key: "T", label: strings.t("projects.actionTerminal"), ok: body.canRun },
             { kind: "editor", key: "E", label: strings.t("projects.actionEditor"), ok: body.canRun },
             { kind: "agent", key: "G", label: strings.t("projects.actionAgent"), ok: body.canRun },
-            { kind: "remote", key: "R", label: strings.t("projects.actionRemote"), ok: body.canRemote }
+            // The host is part of the label: a repo picks its own remote, and a look-alike such as
+            // github.com.example.org should be seen before it is opened.
+            { kind: "remote", key: "R", ok: body.canRemote,
+              label: body.remoteHost ? strings.t("projects.actionRemote") + " · " + body.remoteHost : strings.t("projects.actionRemote") }
           ]
 
           Item {

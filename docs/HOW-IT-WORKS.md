@@ -43,12 +43,17 @@ python3 -I signpost.py doctor           # what Signpost needs, and which optiona
 
 ## Privacy and git safety
 
-Everything stays on your machine. Signpost reads process, git, desktop-entry and terminal-pane data locally, and runs `claude agents --json` (Claude Code's own command) while Claude Code is open. It sends nothing anywhere, and its files are readable by you only (folders 0700, files 0600).
+Everything stays on your machine. Signpost reads process, git, desktop-entry and terminal-pane data locally, and runs `claude agents --json` (Claude Code's own command) while Claude Code is open. It sends nothing anywhere, and its files are readable by you only (folders 0700, files 0600, lock files included). Nothing private goes on a command line that Signpost starts on its own (every account on the machine can read those in `/proc`): alerts are sent to the notification service over D-Bus from the engine itself (libsystemd's sd-bus), git is started in the project folder instead of being given its path, and the shell snippet passes no folder. A terminal or agent you open from the switcher is started in the project folder and also given it as `--dir=`, since some terminals ignore the folder they inherit.
 
-- **Git.** The switcher runs `git` on open and recent project folders only while it is open. A repository can ask git to run programs even on a read (hooks, `core.fsmonitor`, external diff, textconv, filters, transports). Signpost switches every one of these off for each call, and the tests prove it against a repository booby-trapped with each of them. This needs git 2.40 or newer; set `switcherGit` to `never` to run no git at all.
+- **Git.** The switcher runs `git` on open and recent project folders only while it is open. A repository can ask git to run programs even on a read (hooks, `core.fsmonitor`, external diff, textconv, filters, transports). Signpost switches every one of these off for each call, and the tests prove it against a repository booby-trapped with each of them. Switching them off depends on reading the repository's config in full first, so when that read fails (bytes git can't print as text, an error, a timeout) git is not run on the folder at all. Git gets no stdin. Files Signpost reads itself from a project (`.git`, `HEAD`) and from `.desktop` entries are opened without blocking and read only if they are small regular files, so a FIFO or `/dev/zero` placed there by an archive can't hang the engine or fill its memory. This needs git 2.40 or newer; set `switcherGit` to `never` to run no git at all.
 - **Project index.** When the switcher opens and `projectRoots` is non-empty (default `~/Projects`), Signpost lists immediate non-hidden subfolders (capped at 300) and merges `zoxide query --list` when `zoxide` is on `PATH`, honouring `recentIgnore` and de-duplicating by real path against open and recent projects. It checks only for `.git` presence and never runs `git` for indexed folders. Root listings are cached by directory mtime and never run on bar polls.
-- **Questions.** When an agent shares what it is asking, the first 160 characters show in the alert, hover card and switcher. Turn `showQuestions` off and the words never leave the engine.
-- **Screen sharing.** While a screen share is running, names are hidden, the hover card, pin editor and switcher close, and no alerts are sent. Two things are watched: Hyprland's `screencast` events, and the portal's PipeWire streams (`xdph-streaming-*`, read with `pw-dump` at startup, after the event socket reconnects, and every 5 seconds). Hyprland does not replay a share's start to a watcher that connects later, so the streams are what reveal a share that began first. If `pw-dump` is installed but gives no answer, Signpost assumes a share may be running and keeps names hidden until it does (set `hideWhenSharing` to `false` to opt out). Without `pw-dump`, only the events are available and Signpost warns at startup.
+- **Questions.** When an agent shares what it is asking, the first 160 characters show in the alert, hover card and switcher. Turn `showQuestions` off and the words stay out of the alert, the hover card and the switcher (the hook still writes them to its private session file, which is cleared when the agent moves on). Alert text is escaped, so an agent's or MCP server's words can't become a link or change the card's look, and alerts are marked transient, so they don't stay in the notification history.
+- **Screen sharing and recording.** While the screen is captured, names are hidden, the hover card, pin editor and switcher close, alerts already on screen are closed, and no new ones are sent. Three things are watched:
+  - Hyprland's `screencast` events.
+  - The portal's PipeWire streams: a `Video/Source` named `xdph-streaming-*` (in `media.name`, where PipeWire puts the name xdg-desktop-portal-hyprland gives its stream) or belonging to an `xdg-desktop-portal*` process.
+  - This account's screen recorders and remote-desktop servers, by executable: `gpu-screen-recorder` (Omarchy's recorder), `wf-recorder`, `wl-screenrec` and `gliff-server` (Omarchy's remote desktop). They capture without the portal, so no stream shows them.
+
+  The last two are checked at startup, right after every `screencast` event, after the event socket reconnects, and every 5 seconds. Hyprland does not replay a share's start to a watcher that connects later, so they are what reveal a share that began first. Hyprland also reports a share as stopped whenever frames pause for half a second, so names come back only 5 seconds after a stop, and only once nothing is capturing. If `pw-dump` is installed but gives no answer, Signpost assumes a share may be running and keeps names hidden until it does (set `hideWhenSharing` to `false` to opt out). Without `pw-dump`, the events and the recorder check remain, and Signpost warns at startup. A screenshot counts as a capture: the frame it takes may still show names, since the event arrives with it.
 - **Unread counts.** Window titles are read locally, and only the capped count reaches the bar.
 - **Captures.** `signpost.py capture` files contain window titles and folder paths. Check them before attaching one to an issue.
 
@@ -61,12 +66,12 @@ Everything stays on your machine. Signpost reads process, git, desktop-entry and
 | `~/.local/state/signpost/recent-projects.json` (+ `.lock`) | Up to 30 recent project folders |
 | `~/.local/state/signpost/agents/` | One file per hooked session: agent, session id, folder, state, time, process id and any question text |
 | `~/.local/state/signpost/commands/` | With the optional snippet, one private file per reporting shell |
-| `~/.local/state/signpost/bar-restore.json` | The bar entry Signpost replaced, after Replace or `swap` |
-| `~/.local/state/signpost/bar-hint.json`, `claims/` | That you chose Keep both; that the Replace offer was made |
+| `~/.local/state/signpost/bar-restore.json` | Only after `swap` (or Replace, below): the bar entry Signpost replaced |
+| `~/.local/state/signpost/bar-hint.json`, `keep/claims/` | That you chose Keep both; that the Replace offer was made |
 | `~/.local/state/signpost/captures/` | Only when you run `capture` |
 | `$XDG_RUNTIME_DIR/signpost/` | Claude Code's shared session list, alert claims and alert pictures; cleared at logout |
-| `~/.config/omarchy/shell.json` | Only on Replace, `swap`, `unswap` or the installer |
-| Claude Code `settings.json`, Codex `hooks.json`, OpenCode `plugins/signpost/index.ts` (+ backups) | Only on an explicit `hooks install` or `hooks remove` |
+| `~/.config/omarchy/shell.json` | Never on its own. Omarchy changes it when you enable or disable Signpost; Signpost writes it only on Replace, `swap` or `unswap` |
+| Claude Code `settings.json`, Codex `hooks.json`, OpenCode `plugins/signpost/index.ts` (+ one backup of the original) | Only on an explicit `hooks install` or `hooks remove`. A symlinked file is updated where it points, and keeps its mode, owner and ACL; if those can't be kept, it is narrowed to you rather than opened up. Right before writing, Signpost checks that nobody changed the file since it was read, and leaves it alone if so |
 
 ## Known limits
 
@@ -102,7 +107,7 @@ tests/run-qml-smoke.sh                     # every QML file loads against the re
 omarchy plugin validate .
 ```
 
-The Replace button and `signpost.py swap` / `unswap` share the same bar-swap code, keeping the replaced entry, with its settings and position, in `~/.local/state/signpost/bar-restore.json`.
+Signpost's manifest declares it a clone of `omarchy.workspaces`, so Omarchy itself swaps the two on enable and puts its widget back on disable or `plugin remove`. The Replace offer and `signpost.py swap` / `unswap` remain for a bar that ends up with both anyway (for instance after editing `shell.json` by hand); they share one bar-swap code path, keeping the replaced entry, with its settings and position, in `~/.local/state/signpost/bar-restore.json`.
 
 Bug reports are welcome. Please include the output of `omarchy-shell signpost explain`.
 

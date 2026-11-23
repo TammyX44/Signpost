@@ -240,8 +240,9 @@ PopupCard {
       }
     }
 
-    // Omarchy's own workspace numbers are on this bar too: offer to replace them (the same change as
-    // the installer's --swap, undone with `signpost.py unswap`). Nothing changes without a click.
+    // Omarchy's own workspace numbers are on this bar too (Omarchy normally swaps them for Signpost on
+    // enable; this is for a bar edited by hand): offer to replace them, the same change as `signpost.py
+    // swap`, undone with `signpost.py unswap`. Nothing changes without a click.
     Rectangle {
       width: column.width
       visible: !card.down && card.hint !== null

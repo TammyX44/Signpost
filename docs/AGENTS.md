@@ -1,6 +1,6 @@
 # Agent hooks, terminal commands and unread counts
 
-Claude Code works out of the box. The hooks below make status updates faster or add other agents. Each installer merges into your existing config, keeps your other hooks and saves a backup.
+Claude Code works out of the box. The hooks below make status updates faster or add other agents. Each installer merges into your existing config, keeps your other hooks and saves the original once (`*.signpost-backup`). A hook installed by Signpost 0.5.1 or later runs Signpost only while `signpost.py` exists and always exits 0, so it can never block an agent, not even after the plugin was removed without `hooks remove`. Hooks from 0.5.0 show as needing `hooks install` again; run it once (Codex then asks you to trust the updated definitions in `/hooks`).
 
 ```sh
 p=~/.config/omarchy/plugins/io.github.tammyx44.signpost/signpost.py
@@ -27,7 +27,7 @@ python3 -I "$p" hooks install
 python3 -I "$p" hooks remove            # undo
 ```
 
-It acts on `CLAUDE_CONFIG_DIR` or `~/.claude`; add `--config-dir DIR` for another folder (`status` lists every `~/.claude*` folder). Restart running Claude Code sessions afterwards. An install from Signpost 0.3 shows as "partly installed", and `hooks install` adds the new events without duplicating the old ones.
+`install` writes only to `CLAUDE_CONFIG_DIR` or `~/.claude`; add `--config-dir DIR` for another folder. `status` lists every `~/.claude*` folder and flags entries from an older Signpost or pointing at a missing `signpost.py` (run `hooks install` again to replace them). `remove` cleans `~/.claude` and any other `~/.claude*` folder that still has Signpost entries. Restart running Claude Code sessions afterwards. An install from Signpost 0.3 shows as "partly installed", and `hooks install` adds the new events without duplicating the old ones.
 
 The hook listens to `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Elicitation`, `ElicitationResult`, `Stop`, `StopFailure` and `SessionEnd`, as documented in the [hooks reference](https://code.claude.com/docs/en/hooks) for Claude Code 2.1.318. It writes one small file per session, takes about 65 ms, prints nothing and never fails.
 
@@ -59,7 +59,7 @@ Pass and fail are opt-in. Print the snippet for your shell, read it, and add it 
 python3 -I "$p" shell-init bash         # or zsh, fish
 ```
 
-The snippet writes the executable name, folder, timestamps and exit code to a private file. It keeps `$?` (zsh) and `$_` (bash) intact for your prompt. Without the snippet, a finished command shows a hollow grey ring rather than green, so a failed build never looks green. Compound commands and jobs that finish between polls can end up without an outcome.
+The snippet writes the executable name, folder, timestamps and exit code to a private file. The folder is read from the recorder's own working directory, never passed on its command line, and the snippet does nothing once `signpost.py` is gone. It keeps `$?` (zsh) and `$_` (bash) intact for your prompt. Without the snippet, a finished command shows a hollow grey ring rather than green, so a failed build never looks green. Compound commands and jobs that finish between polls can end up without an outcome.
 
 To add your own rules, put `commands` entries (an anchored `pattern` and a `kind` of `build`, `test` or `long`) and `commandIgnore` regexes in `~/.config/signpost/rules.json`. Changes apply within a second.
 

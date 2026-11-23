@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-blue">
+  <img alt="Version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-blue">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Omarchy plugin" src="https://img.shields.io/badge/Omarchy-plugin-orange">
   <img alt="Python 3 and QML" src="https://img.shields.io/badge/Python%203-QML-lightgrey">
@@ -32,7 +32,7 @@ Signpost replaces Omarchy's workspace numbers with **number + tile + name**: the
 omarchy plugin add https://github.com/TammyX44/Signpost --enable
 ```
 
-Signpost offers once to take the place of Omarchy's workspace numbers. Choose **Replace** (your bar is never changed without that click), then check that the engine is running:
+Enabling Signpost puts it in the place of Omarchy's workspace numbers: it is declared as a clone of `omarchy.workspaces`, so Omarchy swaps the two and keeps that widget's position and settings. Disabling or removing Signpost puts Omarchy's widget back (Omarchy does that, not Signpost). Check that the engine is running:
 
 ```sh
 omarchy-shell signpost status
@@ -47,17 +47,16 @@ omarchy plugin update io.github.tammyx44.signpost
 
 ### Uninstall
 
-Remove any optional agent hooks first, put Omarchy's workspace widget back, then remove the plugin and its saved state:
+Remove any optional agent hooks first, then the plugin (Omarchy puts its workspace widget back) and its saved state:
 
 ```sh
 p=~/.config/omarchy/plugins/io.github.tammyx44.signpost/signpost.py
 python3 -I "$p" hooks remove                    # add --agent codex or --agent opencode if installed
-python3 -I "$p" unswap                          # restores the workspace widget you had before
 omarchy plugin remove io.github.tammyx44.signpost --yes
 rm -rf ~/.local/state/signpost                  # pins, aliases, colours and recent projects
 ```
 
-`unswap` tells you when there is nothing to undo. If you added the shell snippet for command status, remove it from your shell startup file too.
+Skipped `hooks remove`? Nothing breaks: a hook installed by Signpost 0.5.1 or later checks that `signpost.py` is still there and otherwise exits quietly, so your agents are never blocked (hooks from 0.5.0 lack that check: run `hooks install` once to update them, or `hooks remove` before removing the plugin); remove the leftover `signpost` entries from the agent's hook config when convenient. The same goes for the optional shell snippet from 0.5.1 on: it does nothing once Signpost is gone (print it again with `shell-init` to replace an older one), and can be deleted from your shell startup file.
 
 ## Works with
 
@@ -107,7 +106,7 @@ See [`docs/SETTINGS.md`](docs/SETTINGS.md) for all `omarchy-shell signpost` comm
 
 ## Optional agent hooks
 
-Claude Code works out of the box via `claude agents --json`. Optional hooks make Claude Code instant, add exact permission alerts for Codex CLI, and add experimental support for OpenCode 2.x. Each installer merges into your existing config and saves a backup:
+Claude Code works out of the box via `claude agents --json`. Optional hooks make Claude Code instant, add exact permission alerts for Codex CLI, and add experimental support for OpenCode 2.x. Each installer merges into your existing config, keeps your other hooks and saves the original once as `*.signpost-backup`:
 
 ```sh
 p=~/.config/omarchy/plugins/io.github.tammyx44.signpost/signpost.py
@@ -119,7 +118,7 @@ See [`docs/AGENTS.md`](docs/AGENTS.md) for per-agent setup, opt-in terminal pass
 
 ## Privacy
 
-Everything runs locally and nothing is sent anywhere. Files written by Signpost are readable by you only (folders `0700`, files `0600`). The switcher runs `git` only while open, with hooks, `core.fsmonitor`, external diff, textconv, filters and transports switched off (needs git 2.40+, or set `switcherGit` to `never`). Turn off `showQuestions` to keep prompt text out of alerts and UI; names and alerts hide automatically during screen sharing, including a share that was already running when Signpost started (this uses `pw-dump` from PipeWire). See [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) for the full file list and git safety details.
+Everything runs locally and nothing is sent anywhere. Files written by Signpost are readable by you only (folders `0700`, files `0600`), and Signpost doesn't put project names, folders or agent questions on command lines, where other accounts could read them: alerts go straight to the notification service over D-Bus, and git runs in the project folder rather than being told it. (The one exception is a terminal you open from the switcher, which is told its folder.) The switcher runs `git` only while open, with hooks, `core.fsmonitor`, external diff, textconv, filters and transports switched off, and not at all when a repo's config can't be read in full (needs git 2.40+, or set `switcherGit` to `never`). Turn off `showQuestions` to keep prompt text out of alerts and UI. Names hide and alerts close while the screen is captured: a screen share (including one already running when Signpost started, seen through `pw-dump` from PipeWire), Omarchy's screen recorder or remote desktop. See [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) for the full file list and git safety details.
 
 ## Requirements
 

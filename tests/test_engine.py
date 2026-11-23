@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -214,6 +215,16 @@ class NativePanes(unittest.TestCase):
                 pane["cwd"] = Path(folder).as_uri()
                 self.probe.use_terminal_panes(self.facts, "WezTerm", sp.wezterm_panes, "tty_name", "pts")
             self.assertEqual(self.facts["tabs"][0]["cwd"], folder)
+
+    def test_a_remote_wezterm_pane_cannot_name_a_local_folder(self):
+        # An SSH-domain pane: WezTerm reports a tty_name (null: no local terminal), and the remote host
+        # sets the folder with OSC 7. It must not become a project here.
+        with tempfile.TemporaryDirectory(prefix="signpost pane ") as folder:
+            self.facts["tabs"] = []
+            pane = {"window_id": 0, "tab_id": 7, "tty_name": None, "cwd": Path(folder).as_uri()}
+            with patch.object(self.probe, "terminal_layout", return_value=[pane]):
+                self.probe.use_terminal_panes(self.facts, "WezTerm", sp.wezterm_panes, "tty_name", "pts")
+            self.assertFalse(self.facts["tabs"])
 
     def test_failed_adapter_waits_before_retrying(self):
         socket_stat = Mock(st_uid=os.getuid(), st_mode=sp.statmod.S_IFSOCK)
@@ -743,6 +754,57 @@ class GitSafety(unittest.TestCase):
         sp.git_details(str(self.repo))
         self.assertFalse(self.sprung())
 
+    def test_a_config_git_cannot_read_as_text_does_not_switch_the_safety_off(self):
+        # The audit's attack: a byte that is not UTF-8 made the config read fail, and git then ran with the
+        # repo's filter still in place. The read must fail closed: no git at all.
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_text("* filter=x\n")
+        with open(self.repo / ".git" / "config", "ab") as f:
+            f.write(f"[filter \"x\"]\n\tclean = {self.script} clean\n[junk]\n\tv = \xff\n".encode("latin-1"))
+        self.touch_same_size()
+        self.git("diff", "HEAD", "--numstat", check=False)
+        self.assertTrue(self.sprung(), "control: plain git runs the filter")
+        sp.git_details(str(self.repo))
+        self.assertFalse(self.sprung(), "git_details ran the trap")
+
+    def test_a_driver_name_that_is_not_utf8_is_still_switched_off(self):
+        name = b"tr\xe9p"
+        (self.repo / ".git" / "info").mkdir(exist_ok=True)
+        (self.repo / ".git" / "info" / "attributes").write_bytes(b"* filter=" + name + b"\n")
+        with open(self.repo / ".git" / "config", "ab") as f:
+            f.write(b'[filter "' + name + b'"]\n\tclean = ' + str(self.script).encode() + b" clean\n")
+        self.touch_same_size()
+        self.check("diff", "HEAD", "--numstat")
+
+    def test_when_the_config_read_fails_git_is_not_run_again(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            raise subprocess.TimeoutExpired(argv, 3)
+        self.assertEqual(sp.git_details(str(self.repo), run=run), {})
+        self.assertEqual(len(calls), 1)
+        calls.clear()
+
+        def failing(argv, **kw):
+            calls.append(argv)
+            return Mock(returncode=128, stdout=b"")
+        self.assertEqual(sp.git_details(str(self.repo), run=failing), {})
+        self.assertEqual(len(calls), 1)
+
+    def test_the_folder_is_not_in_gits_arguments_and_git_gets_no_stdin(self):
+        seen = []
+        real = subprocess.run
+
+        def spy(argv, **kw):
+            seen.append((argv, kw.get("cwd"), kw.get("stdin")))
+            return real(argv, **kw)
+        details = sp.git_details(str(self.repo), run=spy)
+        self.assertEqual(details["branch"], "main")
+        for argv, cwd, stdin in seen:
+            self.assertNotIn(str(self.repo), " ".join(argv))
+            self.assertEqual((cwd, stdin), (str(self.repo), subprocess.DEVNULL))
+
     def test_ssh_command_and_credential_helper_never_run_for_local_reads(self):
         self.config(("remote.origin.url", "ssh://example.invalid/x"), ("core.sshCommand", str(self.exits)),
                     ("credential.helper", f"!{self.exits}"))
@@ -751,6 +813,58 @@ class GitSafety(unittest.TestCase):
         self.assertTrue(self.sprung(), "control: git credential fill runs the helper")
         sp.git_details(str(self.repo))
         self.assertFalse(self.sprung())
+
+
+class UntrustedFiles(unittest.TestCase):
+    """Files under a project folder may come from an archive: `.git` or `HEAD` as a FIFO or a link to
+    /dev/zero must neither hang the engine nor fill its memory."""
+
+    def probe(self, folder):
+        """Git().info() in a child with a time and memory limit, so a regression can't hang the suite."""
+        code = ("import importlib.util,resource,sys\n"
+                "resource.setrlimit(resource.RLIMIT_AS,(1<<30,1<<30))\n"
+                f"spec=importlib.util.spec_from_file_location('sp',{os.path.join(ROOT, 'signpost.py')!r})\n"
+                "sp=importlib.util.module_from_spec(spec);spec.loader.exec_module(sp)\n"
+                "print(repr(sp.Git().info(sys.argv[1])))\n")
+        return subprocess.run([sys.executable, "-I", "-c", code, folder], capture_output=True, text=True, timeout=20)
+
+    def test_fifo_and_device_traps(self):
+        with tempfile.TemporaryDirectory() as d:
+            cases = {}
+            cases["git-fifo"] = os.path.join(d, "a")
+            os.makedirs(cases["git-fifo"])
+            os.mkfifo(os.path.join(cases["git-fifo"], ".git"))
+            cases["git-zero"] = os.path.join(d, "b")
+            os.makedirs(cases["git-zero"])
+            os.symlink("/dev/zero", os.path.join(cases["git-zero"], ".git"))
+            cases["head-fifo"] = os.path.join(d, "c")
+            os.makedirs(os.path.join(cases["head-fifo"], ".git"))
+            os.mkfifo(os.path.join(cases["head-fifo"], ".git", "HEAD"))
+            cases["head-zero"] = os.path.join(d, "e")
+            os.makedirs(os.path.join(cases["head-zero"], ".git"))
+            os.symlink("/dev/zero", os.path.join(cases["head-zero"], ".git", "HEAD"))
+            for name, folder in cases.items():
+                with self.subTest(name):
+                    r = self.probe(folder)
+                    self.assertEqual(r.returncode, 0, r.stderr[-400:])
+                    self.assertEqual(r.stdout.strip(), "None")
+
+    def test_desktop_files_and_icons(self):
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, "trap.desktop")
+            os.mkfifo(fifo)
+            self.assertIsNone(sp.Desktop.parse(fifo))                      # returns at once, no hang
+            image = os.path.join(d, "logo.png")
+            Path(image).write_bytes(b"\x89PNG")
+            os.mkfifo(os.path.join(d, "fifo.png"))
+            self.assertEqual(sp.safe_icon("firefox"), "firefox")
+            self.assertEqual(sp.safe_icon("org.gnome.Nautilus"), "org.gnome.Nautilus")
+            self.assertEqual(sp.safe_icon(image), image)                     # a .desktop file may name a picture
+            self.assertEqual(sp.safe_icon(image, files=False), "")           # a window class never may
+            self.assertEqual(sp.safe_icon(os.path.join(d, "fifo.png")), "")
+            self.assertEqual(sp.safe_icon("/home/u/secret.txt"), "")
+            self.assertEqual(sp.safe_icon("/dev/zero"), "")
+            self.assertEqual(sp.safe_icon("../../x"), "")
 
 
 class WaitAlerts(unittest.TestCase):
@@ -773,14 +887,18 @@ class WaitAlerts(unittest.TestCase):
         self.assertEqual(sp.new_waits(both, seen), [])
 
     def test_the_notification_call(self):
-        argv = sp.notify_argv("Claude needs you", "Arc · search\nRun <b>tests</b>?", jump=True)
-        self.assertEqual(argv[argv.index("susssasa{sv}i") + 1:][:5], ["Signpost", "0", "", "Claude needs you", "Arc · search Run <b>tests</b>?"])
-        self.assertIn("Go to it", argv)
-        self.assertEqual(argv[-5:], ["1", "urgency", "y", "1", "10000"])                 # one hint: normal urgency; ten seconds
+        values = sp.notify_values("Claude needs you", "Arc · search\nRun <b>tests</b> & <a href='x'>go</a>?", jump=True)
+        self.assertEqual(values[:5], ["Signpost", "0", "", "Claude needs you",
+                                      "Arc · search Run &lt;b&gt;tests&lt;/b&gt; &amp; &lt;a href='x'&gt;go&lt;/a&gt;?"])
+        self.assertIn("Go to it", values)
+        # two hints: normal urgency, and transient (kept out of the notification history); ten seconds
+        self.assertEqual(values[-8:], ["2", "urgency", "y", "1", "transient", "b", "true", "10000"])
+        argv = sp.notify_argv("t", "b", jump=False)
         self.assertEqual(argv[:4], ["busctl", "--user", "--", "call"])                    # options end here, so "-x" text is text
-        plain = sp.notify_argv("t", "b", jump=False)
-        self.assertNotIn("Go to it", plain)
-        self.assertEqual(plain[-6], "0")                                                  # no actions
+        self.assertNotIn("Go to it", argv)
+        self.assertEqual(argv[-9], "0")                                                   # no actions
+        # every value fits the signature the bus call checks it against
+        self.assertEqual(len(sp.bus_args(sp.NOTIFY_SIGNATURE, values)), 18)
 
     def test_parsing_what_dbus_says(self):
         self.assertEqual(sp.parse_notify_id("u 42\n"), 42)
@@ -896,7 +1014,7 @@ class AlertFlow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             daemon = self.daemon(d)
             sent = []
-            daemon.notify = lambda title, body, ws, image="": sent.append((title, body, ws))
+            daemon.notify = lambda title, body, ws, image="", **k: sent.append((title, body, ws))
             now = sp.time.time()
             self.ask(d, "old", sp.HOME + "/Projects/Starling", now - 5)
             with patch.object(sp, "focused_workspace", return_value=1):
@@ -920,7 +1038,7 @@ class AlertFlow(unittest.TestCase):
                 daemon.casts = casts
                 daemon.streams = streams
                 sent = []
-                daemon.notify = lambda *a: sent.append(a[:3])
+                daemon.notify = lambda *a, **k: sent.append(a[:3])
                 daemon.primed = True
                 self.ask(d, "s", sp.HOME + "/Projects/Starling", sp.time.time())
                 with patch.object(sp, "focused_workspace", return_value=here):
@@ -932,7 +1050,7 @@ class AlertFlow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             daemon = self.daemon(d)
             sent = []
-            daemon.notify = lambda *a: sent.append(a[:3])
+            daemon.notify = lambda *a, **k: sent.append(a[:3])
             daemon.primed = True
             self.ask(d, "s", "/srv/elsewhere/tool", sp.time.time(), "")
             with patch.object(sp, "focused_workspace", return_value=1):
@@ -946,7 +1064,7 @@ class AlertFlow(unittest.TestCase):
             daemon.monitor = type("M", (), {"stdout": os.fdopen(read, "rb", buffering=0), "poll": lambda self: None,
                                             "wait": lambda self: 0, "terminate": lambda self: None})()
             daemon.sel.register(daemon.monitor.stdout, sp.selectors.EVENT_READ, "notif")
-            daemon.alerts = {7: 3, 8: 5}
+            daemon.alerts = {7: {"ws": 3, "address": "0xabc", "pid": 42}, 8: {"ws": 5, "address": "0xdef", "pid": 50}}
             jumps = []
             daemon.send = lambda message: jumps.append(message)
             lines = [
@@ -956,12 +1074,17 @@ class AlertFlow(unittest.TestCase):
                 "/org/freedesktop/Notifications: org.freedesktop.Notifications.ActionInvoked (uint32 8, 'other')",  # not our button
             ]
             os.write(write, ("\n".join(lines) + "\n").encode())
-            daemon.read_alert_actions()
-            self.assertEqual(jumps, [{"jump": 3}])
-            self.assertEqual(daemon.alerts, {8: 5})
+            # 0xabc is still the agent's window (pid 42); 0xdef now belongs to another process
+            pids = {"0xabc": 42, "0xdef": 99}
+            with patch.object(sp, "window_pid", side_effect=lambda a: pids.get(a)):
+                daemon.read_alert_actions()
+            self.assertEqual(jumps, [{"jump": 3, "address": "0xabc"}])     # to the agent's window, if it moved
+            self.assertEqual(daemon.alerts, {8: {"ws": 5, "address": "0xdef", "pid": 50}})
             os.write(write, b"/org/freedesktop/Notifications: org.freedesktop.Notifications.ActionInvoked (uint32 8, 'default')\n")
-            daemon.read_alert_actions()
-            self.assertEqual(jumps, [{"jump": 3}, {"jump": 5}])
+            with patch.object(sp, "window_pid", side_effect=lambda a: pids.get(a)):
+                daemon.read_alert_actions()
+            # a reused address is not trusted: the workspace the alert named instead
+            self.assertEqual(jumps, [{"jump": 3, "address": "0xabc"}, {"jump": 5, "address": ""}])
             os.close(write)
             daemon.read_alert_actions()                                    # the monitor ended: let go of it
             self.assertIsNone(daemon.monitor)
@@ -972,18 +1095,53 @@ class WatcherCleanup(unittest.TestCase):
 
     ENGINE = ["python3", "-I", "/x/signpost.py", "watch"]
 
-    def test_only_orphaned_watchers_are_stale(self):
-        mine = sp.MONITOR_ARGV
-        table = {
-            10: (1, ["systemd", "--user"]),
-            11: (10, mine),                                  # left behind: parent is not an engine
-            12: (1, self.ENGINE),
-            13: (12, mine),                                  # a live engine's own watcher
-            14: (999, mine),                                 # parent is gone altogether
-            15: (10, ["gdbus", "monitor", "--system"]),      # someone else's gdbus
-            16: (10, ["bash", "-c", "gdbus monitor"]),       # not our exact command
-        }
-        self.assertEqual(sorted(sp.stale_monitors(table)), [11, 14])
+    def test_the_watcher_dies_with_its_engine(self):
+        self.assertEqual(sp.monitor_argv(lambda name: "/usr/bin/setpriv"),
+                         ["setpriv", "--pdeathsig", "TERM", "--", *sp.MONITOR_ARGV])
+        self.assertEqual(sp.monitor_argv(lambda name: None), sp.MONITOR_ARGV)
+
+    def test_nothing_is_stopped_by_its_command_line(self):
+        # A gdbus monitor of your own with the very same arguments is left alone: no reaping at all.
+        self.assertFalse(hasattr(sp, "stale_monitors") or hasattr(sp, "reap_stale_monitors"))
+        killed = []
+        with patch.object(sp.os, "kill", side_effect=lambda *a: killed.append(a)):
+            daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=lambda: 0)
+            self.addCleanup(daemon.sel.close)
+            daemon.send = Mock(side_effect=KeyboardInterrupt)
+            daemon.e.recompute = lambda *a, **k: []
+            daemon.e.snapshot = lambda: {"workspaces": []}
+            with patch.object(sp, "active_window", return_value=None), patch.object(sp, "hypr_dir", return_value=None), \
+                    self.assertRaises(KeyboardInterrupt):
+                daemon.run()
+        self.assertEqual(killed, [])
+
+    def test_a_live_watcher_really_ends_when_its_parent_is_killed(self):
+        if not shutil.which("setpriv"):
+            self.skipTest("setpriv not installed")
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "child")
+            # A parent that starts `sleep` the way the engine starts its watcher, then is SIGKILLed.
+            script = ("import subprocess,sys,time\n"
+                      "p=subprocess.Popen(['setpriv','--pdeathsig','TERM','--','sleep','30'])\n"
+                      f"open({pidfile!r},'w').write(str(p.pid))\n"
+                      "time.sleep(30)\n")
+            parent = subprocess.Popen([sys.executable, "-I", "-c", script])
+            for _ in range(100):
+                if os.path.exists(pidfile) and open(pidfile).read():
+                    break
+                time.sleep(0.05)
+            child = int(open(pidfile).read())
+            parent.kill()
+            parent.wait()
+            for _ in range(100):
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                os.kill(child, 9)
+                self.fail("the child outlived its killed parent")
 
     def test_the_process_table_reads_this_process(self):
         table = sp.proc_table()
@@ -1321,19 +1479,61 @@ class PortalStreams(unittest.TestCase):
     which = staticmethod(lambda name: "/usr/bin/pw-dump")
 
     @staticmethod
-    def dump(*names, code=0, out=None):
-        nodes = [{"type": "PipeWire:Interface:Node", "info": {"props": {"node.name": n}}} for n in names]
-        text = json.dumps(nodes) if out is None else out
+    def node(oid=None, **props):
+        return {"id": oid, "type": "PipeWire:Interface:Node", "info": {"props": {k.replace("_", "."): v for k, v in props.items()}}}
+
+    @staticmethod
+    def client(oid, **props):
+        return {"id": oid, "type": "PipeWire:Interface:Client", "info": {"props": {k.replace("_", "."): v for k, v in props.items()}}}
+
+    @staticmethod
+    def dump(*objects, code=0, out=None):
+        text = json.dumps(list(objects)) if out is None else out
         return lambda *a, **k: Mock(stdout=text, returncode=code)
 
     def count(self, run):
         return sp.portal_streams(run=run, which=self.which)
 
-    def test_counts_only_the_portals_streams(self):
-        run = self.dump("alsa_output.speaker", "xdph-streaming-1a2b", "xdph-streaming-3c4d", "v4l2_input.cam")
+    # What pw_stream_new(core, "xdph-streaming-…", {media.class: Video/Source}) produces inside
+    # xdg-desktop-portal-hyprland: the name lands in media.name, node.name is the program's name.
+    def xdph_share(self, oid, client_id=90):
+        return self.node(oid, media_name=f"xdph-streaming-{oid:x}", node_name="xdg-desktop-portal-hyprland",
+                         media_class="Video/Source", client_id=client_id)
+
+    def test_counts_the_portals_real_streams_by_media_name(self):
+        run = self.dump(self.client(90, application_name="xdg-desktop-portal-hyprland"),
+                        self.xdph_share(101), self.xdph_share(102))
         self.assertEqual(self.count(run), 2)
-        self.assertEqual(self.count(self.dump("alsa_output.speaker")), 0)
+
+    def test_the_stream_name_alone_is_enough(self):
+        named_media = self.node(1, media_name="xdph-streaming-1a2b")
+        named_node = self.node(2, node_name="xdph-streaming-3c4d")
+        self.assertEqual(self.count(self.dump(named_media, named_node)), 2)
+
+    def test_a_portal_video_source_counts_whatever_its_name(self):
+        by_node = self.node(1, media_name="screen-1", node_name="xdg-desktop-portal-hyprland", media_class="Video/Source")
+        by_binary = self.node(2, media_name="screen-2", application_process_binary="xdg-desktop-portal-wlr",
+                              media_class="Video/Source")
+        by_client = self.node(3, media_name="screen-3", node_name="screen-3", media_class="Video/Source", client_id=77)
+        portal = self.client(77, application_process_binary="xdg-desktop-portal-hyprland")
+        self.assertEqual(self.count(self.dump(portal, by_node, by_binary, by_client)), 3)
+
+    def test_cameras_audio_and_other_programs_do_not_count(self):
+        objects = [
+            self.client(60, application_name="WirePlumber"),
+            self.node(10, node_name="v4l2_input.pci-0000_00_14.0-usb-0_3_1.0", media_class="Video/Source", client_id=60),
+            self.node(11, node_name="alsa_output.speaker", media_class="Audio/Sink", client_id=60),
+            # the portal's own audio, if any, is not a screen share
+            self.node(12, node_name="xdg-desktop-portal-hyprland", media_class="Audio/Source"),
+            self.node(13, node_name="obs", media_name="Screen capture", media_class="Video/Source"),
+            self.client(70, application_name="xdph-streaming-lookalike"),   # a client, not a node
+        ]
+        self.assertEqual(self.count(self.dump(*objects)), 0)
         self.assertEqual(self.count(self.dump()), 0)
+
+    def test_values_that_are_not_text_are_ignored(self):
+        odd = self.node(1, media_name=["xdph-streaming-1"], node_name=7, media_class="Video/Source", client_id=[1])
+        self.assertEqual(self.count(self.dump(odd)), 0)
 
     def test_objects_without_props_are_skipped(self):
         run = self.dump(out=json.dumps([{"type": "PipeWire:Interface:Core"}, "stray", None,
@@ -1341,7 +1541,7 @@ class PortalStreams(unittest.TestCase):
         self.assertEqual(self.count(run), 0)
 
     def test_none_when_pipewire_is_there_but_will_not_say(self):
-        self.assertIsNone(self.count(self.dump("xdph-streaming-1", code=1)))
+        self.assertIsNone(self.count(self.dump(self.node(1, media_name="xdph-streaming-1"), code=1)))
         self.assertIsNone(self.count(self.dump(out="not json")))
         self.assertIsNone(self.count(self.dump(out="{}")))
 
@@ -1381,7 +1581,7 @@ class ShareAlreadyRunning(unittest.TestCase):
         daemon.send = send
         daemon.e.recompute = lambda *a, **k: []
         daemon.e.snapshot = lambda: {"workspaces": []}
-        with patch.object(sp, "reap_stale_monitors"), patch.object(sp, "active_window", return_value=None), \
+        with patch.object(sp, "active_window", return_value=None), \
                 patch.object(sp, "hypr_dir", return_value=None), self.assertRaises(Stop):
             daemon.run()
         return sent[0]
@@ -1446,6 +1646,228 @@ class ShareAlreadyRunning(unittest.TestCase):
         with patch.object(sp, "hypr_dir", return_value=None):
             daemon.connect()
         self.assertEqual(daemon.next_streams, 0.0)
+
+
+class PrivateAlerts(unittest.TestCase):
+    """What an alert says (the project, what the agent asked) must not land on a command line, which
+    every account can read in /proc, and must not stay up once the screen is shared."""
+
+    class FakeBus:
+        def __init__(self):
+            self.sent, self.closed = [], []
+
+        def notify(self, values):
+            sp.bus_args(sp.NOTIFY_SIGNATURE, values)        # what sd-bus would be handed must fit
+            self.sent.append(values)
+            return 7 + len(self.sent)
+
+        def close_notification(self, nid):
+            self.closed.append(nid)
+
+        def close(self):
+            pass
+
+    def daemon(self, bus):
+        warning = patch.object(sp, "warn")
+        warning.start()
+        self.addCleanup(warning.stop)
+        daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=lambda: 0, bus=bus)
+        self.addCleanup(daemon.sel.close)
+        daemon.watch_alerts = lambda: None
+        return daemon
+
+    def test_alerts_go_over_the_bus_and_never_through_a_command(self):
+        bus = self.FakeBus()
+        daemon = self.daemon(lambda: bus)
+        with patch.object(sp.subprocess, "run", side_effect=AssertionError("no subprocess")):
+            daemon.notify("acme-merger needs you", "Workspace 3 · Allow Bash: curl -H 'Authorization: Bearer x'", 3)
+        self.assertEqual(bus.sent[0][3], "acme-merger needs you")
+        self.assertEqual(daemon.alerts, {8: {"ws": 3, "address": "", "pid": None}})
+
+    def test_without_sd_bus_the_fallback_says_nothing_private(self):
+        def no_bus():
+            raise OSError("no libsystemd")
+        daemon = self.daemon(no_bus)
+        seen = []
+        with patch.object(sp.subprocess, "run", side_effect=lambda argv, **k: seen.append(argv) or Mock(stdout="u 9\n")):
+            daemon.notify("acme-merger needs you", "Workspace 3 · Allow Bash: curl secret", 3, "/tmp/acme.svg")
+            daemon.notify("Signpost is on your bar twice over", "Replace them?", 0, actions=[("replace", "Replace")],
+                          private=False)
+        first = " ".join(seen[0])
+        for secret in ("acme", "curl", "secret"):
+            self.assertNotIn(secret, first)
+        self.assertIn("An agent needs you", first)
+        self.assertIn("Workspace 3", first)
+        self.assertIn("Replace them?", " ".join(seen[1]))           # nothing private there: sent as it is
+        self.assertEqual(daemon.alerts[9], {"hint": True})
+
+    def test_alerts_close_when_a_share_starts(self):
+        bus = self.FakeBus()
+        daemon = self.daemon(lambda: bus)
+        daemon.notify("a needs you", "Workspace 3", 3)
+        daemon.notify("b needs you", "Workspace 4", 4)
+        daemon.close_alerts_for_sharing()
+        self.assertEqual(bus.closed, [])                            # not sharing: they stay
+        daemon.casts = {"monitor": 1}
+        daemon.close_alerts_for_sharing()
+        self.assertEqual(sorted(bus.closed), [8, 9])
+        self.assertEqual(daemon.alerts, {})                         # a late press can't jump either
+
+    def test_bus_arguments_follow_the_signature(self):
+        args = sp.bus_args("sa{sv}as", ["x", "2", "urgency", "y", "1", "transient", "b", "true", "0"])
+        kinds = [type(a).__name__ for a in args]
+        self.assertEqual(kinds, ["c_char_p", "c_uint", "c_char_p", "c_char_p", "c_int", "c_char_p", "c_char_p",
+                                 "c_int", "c_uint"])
+        with self.assertRaises(ValueError):
+            sp.bus_args("ss", ["only one"])
+        with self.assertRaises(ValueError):
+            sp.bus_args("s", ["one", "two"])
+
+
+class CaptureDetection(unittest.TestCase):
+    def daemon(self, probe):
+        warning = patch.object(sp, "warn")
+        warning.start()
+        self.addCleanup(warning.stop)
+        daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=probe)
+        self.addCleanup(daemon.sel.close)
+        return daemon
+
+    def test_recorders_and_remote_desktop_are_found_by_their_executable(self):
+        with tempfile.TemporaryDirectory() as proc:
+            def fake(pid, exe):
+                os.makedirs(os.path.join(proc, pid))
+                os.symlink(exe, os.path.join(proc, pid, "exe"))
+            fake("10", "/usr/bin/gpu-screen-recorder")
+            fake("11", "/usr/bin/gliff-server (deleted)")              # upgraded while running
+            fake("12", "/usr/bin/wf-recorder")
+            fake("13", "/usr/bin/kitty")
+            fake("14", "/home/u/bin/not-gpu-screen-recorder")
+            os.makedirs(os.path.join(proc, "self"))
+            self.assertEqual(sp.capture_processes(proc, uid=os.getuid()), 3)
+            self.assertEqual(sp.capture_processes(proc, uid=os.getuid() + 1), 0)   # another account's: its own desktop
+        self.assertEqual(sp.screen_captures(lambda: 1, lambda: 2), 3)
+        self.assertIsNone(sp.screen_captures(lambda: None, lambda: 2))
+
+    def test_a_pause_in_frames_does_not_bring_names_back(self):
+        daemon = self.daemon(lambda: 0)
+        daemon.sock = Mock()
+        daemon.sock.recv.side_effect = [b"screencast>>1,monitor\n", b"screencast>>0,monitor\n"]
+        daemon.read_events()
+        self.assertTrue(daemon.sharing())
+        self.assertEqual(daemon.next_streams, 0.0)                      # looked at again at once
+        daemon.read_events()
+        self.assertFalse(daemon.casts)
+        self.assertTrue(daemon.sharing())                               # Hyprland said stop: not yet
+        self.assertTrue(daemon.sharing(daemon.cast_ended + daemon.SHARE_GRACE - 0.1))
+        self.assertFalse(daemon.sharing(daemon.cast_ended + daemon.SHARE_GRACE + 0.1))
+        daemon.streams = 1                                              # a recorder or portal stream still runs
+        self.assertTrue(daemon.sharing(daemon.cast_ended + 60))
+
+
+class RenameIsBoundToWhatWasShown(unittest.TestCase):
+    def test_a_rename_for_a_project_that_moved_off_the_workspace_renames_nothing(self):
+        state = {"pins": {}, "aliases": {}, "recent": []}
+        results = {2: {"aliasKey": "/p/Other", "aliasRepo": "Other"}}
+        msg = sp.apply_command(state, {"cmd": "alias", "ws": 2, "name": "card", "key": "/p/Starling"}, results)
+        self.assertIn("changed", msg)
+        self.assertEqual(state["aliases"], {})
+        sp.apply_command(state, {"cmd": "alias", "ws": 2, "name": "card", "key": "/p/Other"}, results)
+        self.assertEqual(state["aliases"], {"/p/Other": "card"})
+        sp.apply_command(state, {"cmd": "unalias", "ws": 2, "key": "/p/Starling"}, results)
+        self.assertEqual(state["aliases"], {"/p/Other": "card"})           # not that one either
+        sp.apply_command(state, {"cmd": "alias", "ws": 2, "name": "ipc"}, results)   # no editor: what is there
+        self.assertEqual(state["aliases"], {"/p/Other": "ipc"})
+
+
+class StateEditsFromSeveralBars(unittest.TestCase):
+    def test_two_bars_pinning_at_once_keep_both_pins(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "state.json")
+            left = sp.Engine(rules=RULES, state_file=path)
+            right = sp.Engine(rules=RULES, state_file=path)         # read the file before left's pin
+            left.edit_state(lambda s: sp.apply_command(s, {"cmd": "pin", "ws": 1, "name": "inbox"}, {}))
+            right.edit_state(lambda s: sp.apply_command(s, {"cmd": "pin", "ws": 2, "name": "mail"}, {}))
+            self.assertEqual(sp.load_state(path)["pins"], {"1": "inbox", "2": "mail"})
+            # a colour-slot save from a bar that hasn't seen either pin keeps them too
+            stale = sp.Engine(rules=RULES, state_file=path)
+            stale.state["pins"] = {}
+            stale.results = {1: {"_colorKey": "/p/new", "_projects": []}}
+            stale.history.entries = []
+            stale.give_slots()
+            self.assertEqual(sp.load_state(path)["pins"], {"1": "inbox", "2": "mail"})
+            self.assertEqual(os.stat(path + ".lock").st_mode & 0o777, 0o600)
+
+
+class SecondReview(unittest.TestCase):
+    def test_a_stale_entry_in_any_folder_is_reported_before_installed(self):
+        with tempfile.TemporaryDirectory() as d:
+            good, old = os.path.join(d, "good"), os.path.join(d, "old")
+            script = os.path.join(d, "signpost.py")
+            open(script, "w").close()
+            for folder, cmd in ((good, sp.hook_command(script)), (old, f"python3 -I {script} hook")):
+                os.makedirs(folder)
+                with open(os.path.join(folder, "settings.json"), "w") as f:
+                    json.dump(sp.with_hooks({}, cmd), f)
+            self.assertEqual(sp.hook_install_state([good, old]), ("partial", [sp.collapse_home(old)]))
+
+    def test_deleting_through_a_symlink_removes_the_link_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d, "dotfiles-shell.json")
+            target.write_text("{}")
+            link = Path(d, "shell.json")
+            link.symlink_to(target)
+            sp.atomic_write(link, None)
+            self.assertFalse(link.is_symlink())
+            self.assertTrue(target.exists())
+
+    def test_percent_escapes_are_not_icon_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d, "%66ifo.png")
+            real.write_bytes(b"x")
+            self.assertEqual(sp.safe_icon(str(real)), "")
+            self.assertEqual(sp.safe_icon(d + "/a?.png"), "")
+
+    def test_a_local_wezterm_mux_pane_keeps_its_folder(self):
+        tty = os.ttyname(0) if os.isatty(0) else None
+        self.assertFalse(sp.own_tty(None))
+        self.assertFalse(sp.own_tty("/dev/null"))
+        self.assertFalse(sp.own_tty("/etc/passwd"))
+        if tty and tty.startswith("/dev/pts/"):
+            self.assertTrue(sp.own_tty(tty))
+
+    def test_a_failed_bus_call_opens_a_new_connection_next_time(self):
+        opened = []
+
+        class Broken:
+            def notify(self, values):
+                raise OSError("connection reset")
+
+            def close(self):
+                opened.append("closed")
+        warning = patch.object(sp, "warn")
+        warning.start()
+        self.addCleanup(warning.stop)
+        daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=lambda: 0,
+                           bus=lambda: opened.append("open") or Broken())
+        self.addCleanup(daemon.sel.close)
+        daemon.notify("t", "b", 3)
+        daemon.notify("t", "b", 3)
+        self.assertEqual(opened, ["open", "closed", "open", "closed"])
+
+    def test_a_capture_start_is_sent_before_anything_else(self):
+        warning = patch.object(sp, "warn")
+        warning.start()
+        self.addCleanup(warning.stop)
+        daemon = sp.Daemon(sp.Engine(rules=RULES, state_file="/nonexistent"), streams=lambda: 0)
+        self.addCleanup(daemon.sel.close)
+        sent = []
+        daemon.e.snapshot = lambda: {"workspaces": []}
+        daemon.send = lambda message: sent.append(message)
+        daemon.sock = Mock()
+        daemon.sock.recv.side_effect = [b"screencast>>1,monitor\n"]
+        daemon.read_events()
+        self.assertEqual([m["sharing"] for m in sent], [True])
 
 
 class Commands(unittest.TestCase):
@@ -1612,10 +2034,16 @@ class HookStatus(unittest.TestCase):
         with open(os.path.join(d, "settings.json"), "w") as f:
             json.dump(settings, f)
 
+    def script(self, d):
+        path = os.path.join(d, "plugin", "signpost.py")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        return path
+
     def test_reports_installed_partial_and_missing(self):
         with tempfile.TemporaryDirectory() as d:
             full, part, bare, old = (os.path.join(d, n) for n in ("full", "part", "bare", "old"))
-            cmd = sp.hook_command("/x/signpost.py")
+            cmd = sp.hook_command(self.script(d))
             self.write(full, sp.with_hooks({}, cmd))
             some = sp.with_hooks({}, cmd)
             some["hooks"] = {k: v for k, v in some["hooks"].items() if k == "Stop"}
@@ -1627,7 +2055,7 @@ class HookStatus(unittest.TestCase):
 
     def test_an_install_from_signpost_0_3_is_partial_and_install_adds_the_rest_once(self):
         with tempfile.TemporaryDirectory() as d:
-            cmd = sp.hook_command("/x/signpost.py")
+            cmd = sp.hook_command(sp.os.path.realpath(sp.__file__))
             old = {"hooks": {e: [{"hooks": [{"type": "command", "command": cmd}]}] for e in sp.HOOK_EVENTS_V1}}
             old["hooks"]["Stop"].insert(0, {"hooks": [{"type": "command", "command": "notify-send done"}]})
             self.write(d, old)
@@ -1645,6 +2073,120 @@ class HookStatus(unittest.TestCase):
                 self.assertEqual(sum(sp._ours(g) for g in new["hooks"][event]), 1, event)
             self.assertEqual(new["hooks"]["Stop"][0], old["hooks"]["Stop"][0])          # theirs kept, first
             self.assertEqual(sp.hook_install_state([d])[0], "installed")
+
+    def run_installed(self, command, how, payload=b'{"hook_event_name":"Stop","session_id":"s"}'):
+        """Run an installed hook command as an agent would: through a shell, or split into words."""
+        argv = ["sh", "-c", command] if how == "shell" else shlex.split(command)
+        return subprocess.run(argv, input=payload, capture_output=True, timeout=20)
+
+    def test_a_removed_plugin_never_blocks_the_agent(self):
+        # python3 exits 2 for a missing script, and 2 is "block" to Claude Code (prompts refused, permissions
+        # denied). The installed command must say 0 instead, whichever way the agent runs it.
+        with tempfile.TemporaryDirectory() as d:
+            gone = os.path.join(d, "removed-plugin", "signpost.py")
+            self.assertEqual(subprocess.run([sys.executable, "-I", gone, "hook"], capture_output=True).returncode, 2)
+            for agent in ("claude", "codex"):
+                for how in ("shell", "words"):
+                    with self.subTest(agent=agent, how=how):
+                        r = self.run_installed(sp.hook_command(gone, agent), how)
+                        self.assertEqual((r.returncode, r.stdout), (0, b""))
+
+    def test_the_installed_command_still_runs_the_hook(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = self.script(d)
+            with open(script, "w") as f:      # stands in for signpost.py: records what it was given
+                f.write("import sys\nopen(sys.argv[0] + '.ran', 'w').write(' '.join(sys.argv[1:]) + '|' + sys.stdin.read())\n"
+                        "print('{}')\nsys.exit(2)\n")
+            for agent, args in (("claude", "hook"), ("codex", "hook --agent codex")):
+                for how in ("shell", "words"):
+                    with self.subTest(agent=agent, how=how):
+                        r = self.run_installed(sp.hook_command(script, agent), how)
+                        self.assertEqual(r.returncode, 0)                 # even when the hook itself fails
+                        self.assertEqual(r.stdout, b"{}\n")               # Codex's Stop reply still gets through
+                        with open(script + ".ran") as f:
+                            self.assertEqual(f.read(), args + '|{"hook_event_name":"Stop","session_id":"s"}')
+
+    def test_odd_folder_names_stay_one_argument(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = os.path.join(d, "it's a \"dir\"; $(touch pwned) `x`", "signpost.py")
+            os.makedirs(os.path.dirname(script))
+            with open(script, "w") as f:
+                f.write("import sys\nopen(sys.argv[0] + '.ran', 'w').write('ok')\n")
+            for how in ("shell", "words"):
+                r = self.run_installed(sp.hook_command(script), how)
+                self.assertEqual(r.returncode, 0)
+                self.assertTrue(os.path.exists(script + ".ran"))
+                os.unlink(script + ".ran")
+            self.assertNotIn("pwned", os.listdir(d))
+            self.assertNotIn("pwned", os.listdir(os.path.dirname(script)))
+            self.assertFalse(os.path.exists(os.path.join(os.getcwd(), "pwned")))
+
+    def test_old_and_broken_entries_are_found_and_reinstall_replaces_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = self.script(d)
+            legacy = f"python3 -I {shlex.quote(script)} hook"         # what Signpost 0.5.0 installed
+            self.write(d, {"hooks": {e: [{"hooks": [{"type": "command", "command": legacy}]}] for e in sp.HOOK_EVENTS}})
+            self.assertEqual(sp.hook_install_state([d])[0], "partial")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                sp.hooks_cli(["status", "--config-dir", d])
+            self.assertIn("needs `hooks install` again", out.getvalue())
+            with redirect_stdout(io.StringIO()):
+                sp.hooks_cli(["install", "--config-dir", d])
+            with open(os.path.join(d, "settings.json")) as f:
+                new = json.load(f)
+            for event in sp.HOOK_EVENTS:
+                commands = [h["command"] for g in new["hooks"][event] for h in g["hooks"]]
+                self.assertEqual(commands, [sp.hook_command()], event)      # the old one is gone, not doubled
+            # an entry left pointing at a plugin that was removed is flagged too
+            gone = sp.with_hooks({}, sp.hook_command(os.path.join(d, "nowhere", "signpost.py")))
+            self.assertEqual(sp.stale_handlers(gone), [os.path.join(d, "nowhere", "signpost.py")])
+            with redirect_stdout(io.StringIO()):
+                sp.hooks_cli(["remove", "--config-dir", d])
+            with open(os.path.join(d, "settings.json")) as f:
+                self.assertEqual(sp.hooks_installed(json.load(f)), [])
+
+    def test_install_goes_to_the_folder_in_use_only(self):
+        with tempfile.TemporaryDirectory() as home:
+            for name in (".claude", ".claude-old"):
+                os.makedirs(os.path.join(home, name))
+            self.write(os.path.join(home, ".claude-old"), {"theme": "dark"})      # only the old one has settings
+            with patch.object(sp, "HOME", home), patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                self.assertEqual(sp.hook_dirs("claude", "install"), [os.path.join(home, ".claude")])
+                self.assertIn(os.path.join(home, ".claude-old"), sp.hook_dirs("claude", "status"))
+                os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(home, "work")
+                self.assertEqual(sp.hook_dirs("claude", "install"), [os.path.join(home, "work")])
+                # remove also cleans a folder an older Signpost installed into
+                self.write(os.path.join(home, ".claude-old"), sp.with_hooks({}, sp.hook_command(self.script(home))))
+                self.assertEqual(sp.hook_dirs("claude", "remove"),
+                                 [os.path.join(home, "work"), os.path.join(home, ".claude-old")])
+
+    def test_first_backup_is_the_original_and_a_concurrent_edit_is_not_lost(self):
+        with tempfile.TemporaryDirectory() as d:
+            original = {"theme": "dark"}
+            self.write(d, original)
+            path = os.path.join(d, "settings.json")
+            with redirect_stdout(io.StringIO()):
+                sp.hooks_cli(["install", "--config-dir", d])
+                sp.hooks_cli(["remove", "--config-dir", d])
+                sp.hooks_cli(["install", "--config-dir", d])
+            with open(path + ".signpost-backup") as f:
+                self.assertEqual(json.load(f), original)                   # still the pre-Signpost file
+            # someone saves the file between Signpost's read and its write: refuse, keep their save
+            real = sp.read_bytes
+            calls = []
+
+            def racing(p):
+                calls.append(p)
+                if p == path and len([c for c in calls if c == path]) == 2:
+                    with open(path, "w") as f:
+                        json.dump({"theme": "light"}, f)
+                return real(p)
+            with patch.object(sp, "read_bytes", racing), self.assertRaises(ValueError):
+                sp.json_hook_config("remove", d, "claude")
+            with open(path) as f:
+                self.assertEqual(json.load(f), {"theme": "light"})
 
     def test_summary_says_where_needs_you_comes_from(self):
         short = lambda hook, view: sp.claude_summary(hook, view, script="/x/signpost.py")[0]
@@ -1682,9 +2224,11 @@ class AlertPicture(unittest.TestCase):
             self.assertNotIn("<", sp.alert_picture(0, "<", palette, d).rsplit("/", 1)[1])
 
     def test_the_picture_travels_as_an_image_path_hint(self):
-        argv = sp.notify_argv("t", "b", jump=True, image="/home/u/icon.png")
-        self.assertEqual(argv[-8:], ["2", "urgency", "y", "1", "image-path", "s", "/home/u/icon.png", "10000"])
-        self.assertEqual(sp.notify_argv("t", "b", jump=True, image="relative.png")[-5:], ["1", "urgency", "y", "1", "10000"])
+        values = sp.notify_values("t", "b", jump=True, image="/home/u/icon.png")
+        self.assertEqual(values[-11:], ["3", "urgency", "y", "1", "transient", "b", "true",
+                                        "image-path", "s", "/home/u/icon.png", "10000"])
+        self.assertEqual(sp.notify_values("t", "b", jump=True, image="relative.png")[-8:],
+                         ["2", "urgency", "y", "1", "transient", "b", "true", "10000"])
 
 
 # The shape `claude agents --json` printed on the author's machine (Claude Code 2.1.318), with the
@@ -2144,7 +2688,7 @@ class OneAlertAcrossMonitors(unittest.TestCase):
             left, right = self.daemon(d), self.daemon(d)
             sent, jumps = [], []
             for name, daemon in (("left", left), ("right", right)):
-                daemon.notify = lambda title, body, ws, image="", actions=None, name=name: sent.append(name)
+                daemon.notify = lambda title, body, ws, image="", actions=None, name=name, **k: sent.append(name)
                 daemon.send = lambda message, name=name: jumps.append((name, message))
             sp.write_hook({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "session_id": "s1",
                            "cwd": sp.HOME + "/Projects/Starling"}, os.path.join(d, "agents"))
@@ -2154,14 +2698,14 @@ class OneAlertAcrossMonitors(unittest.TestCase):
                 left.tick_agents()
             self.assertEqual(sent, ["left"])
             # The left engine's watcher sees the press; the right one sees it too, but it isn't its alert.
-            left.alerts[7], right.alerts = 3, {}
+            left.alerts[7], right.alerts = {"ws": 3, "address": ""}, {}
             line = "/org/freedesktop/Notifications: org.freedesktop.Notifications.ActionInvoked (uint32 7, 'go')\n"
             for daemon in (left, right):
                 daemon.monitor = Mock()
                 daemon.monitor.stdout.fileno.return_value = 0
                 with patch.object(sp.os, "read", return_value=line.encode()):
                     daemon.read_alert_actions()
-            self.assertEqual(jumps, [("left", {"jump": 3})])
+            self.assertEqual(jumps, [("left", {"jump": 3, "address": ""})])
 
     def test_two_real_processes_send_one_alert(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2179,7 +2723,7 @@ with open({os.path.join(ROOT, "tests", "fixtures", "t3-title-picks-agent.json")!
 engine.results = sp.decide(facts, {{}}, {{}}, rules)
 daemon = sp.Daemon(engine); daemon.primed = True
 sp.focused_workspace = lambda: 1
-def notify(title, body, ws, image="", actions=None):
+def notify(title, body, ws, image="", actions=None, **k):
     with open(os.path.join(d, "sent"), "a") as f: f.write(str(os.getpid()) + "\\n")
 daemon.notify = notify
 while time.time() < float(sys.argv[2]): time.sleep(0.001)
@@ -2487,6 +3031,45 @@ class CommandStatus(unittest.TestCase):
             self.assertGreaterEqual(result["ended"], result["launched"])
             self.assertEqual(sp.shell_command_name("make || true"), "")
 
+    def test_snippets_keep_the_folder_off_the_command_line(self):
+        for shell in ("bash", "zsh", "fish"):
+            snippet = sp.shell_init(shell, "/opt/signpost.py")
+            self.assertNotIn("$PWD", snippet, shell)
+            self.assertIn("_signpost_run", snippet)
+        with tempfile.TemporaryDirectory() as d, patch.object(sp, "read_proc", return_value={"session": 123, "tty": 7, "start": 9}):
+            here = os.getcwd()
+            try:
+                os.chdir(d)
+                with patch.object(sp.sys, "stdin", io.StringIO("make")):
+                    sp.shell_record(["start", "123", "-"], d)       # "-": the recorder's own folder
+                sp.shell_record(["end", "123", "-", "0"], d)
+            finally:
+                os.chdir(here)
+            record = json.loads(Path(d, "123.json").read_text())
+            self.assertEqual((record["cwd"], record["code"]), (os.path.realpath(d), 0))
+
+    @unittest.skipUnless(shutil.which("bash"), "bash not installed")
+    def test_bash_snippet_runs_and_is_quiet_once_signpost_is_removed(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = os.path.join(d, "signpost.py")
+            log = os.path.join(d, "calls")
+            with open(script, "w") as f:      # stands in for signpost.py: logs its arguments and folder
+                f.write(f"import os,sys\nopen({log!r},'a').write(' '.join(sys.argv[1:]) + ' @' + os.getcwd() + '\\n')\n")
+            rc = os.path.join(d, "rc")
+            work = os.path.join(d, "client-acme")
+            os.makedirs(work)
+            Path(rc).write_text(sp.shell_init("bash", script))
+            session = f"cd {shlex.quote(work)}\ntrue\nrm {shlex.quote(script)}\ntrue\nexit\n"
+            r = subprocess.run(["bash", "--rcfile", rc, "-i"], input=session, text=True, capture_output=True,
+                               timeout=30, env={**os.environ, "HISTFILE": os.path.join(d, "hist"), "PS1": "$ "})
+            calls = Path(log).read_text().splitlines()
+            self.assertTrue(calls, r.stderr)
+            for line in calls:
+                args, _, folder = line.partition(" @")
+                self.assertNotIn("client-acme", args)                   # never an argument
+            self.assertTrue(any(line.endswith("@" + os.path.realpath(work)) for line in calls))
+            self.assertNotIn("can't open file", r.stderr)              # removed: nothing on every prompt
+
 
 class UnreadTitles(unittest.TestCase):
     CLASS = "chrome-web.whatsapp.com__-Default"
@@ -2577,7 +3160,7 @@ class ReviewFixes(unittest.TestCase):
                 daemon = sp.Daemon(engine)
                 daemon.primed = True
                 sent = []
-                daemon.notify = lambda title, body, ws, image="", actions=None: sent.append((title, body, ws))
+                daemon.notify = lambda title, body, ws, image="", actions=None, **k: sent.append((title, body, ws))
                 with patch.object(sp, "focused_workspace", return_value=1):
                     daemon.tick_agents()
             self.assertEqual(len(sent), 1)

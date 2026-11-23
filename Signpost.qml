@@ -324,7 +324,11 @@ BarWidget {
     }
     if (data && data.jump !== undefined) {
       // "Go to it" on an agent's alert
-      if (Number.isSafeInteger(data.jump) && data.jump > 0) root.focusWorkspace(data.jump)
+      // To the agent's window when it still exists (wherever it moved), else to its workspace.
+      if (Number.isSafeInteger(data.jump) && data.jump > 0) {
+        if (/^0x[0-9a-fA-F]+$/.test(String(data.address || ""))) root.jumpToProject(data.jump, data.address)
+        else root.focusWorkspace(data.jump)
+      }
       return
     }
     if (!data || !data.workspaces) return
@@ -388,7 +392,9 @@ BarWidget {
       var waits = [1000, 5000, 30000]
       restartTimer.interval = waits[Math.min(root.restarts, waits.length - 1)]
       root.restarts++
-      if (root.restarts === 1) console.warn("signpost: engine exited (" + code + "): " + root.lastLog)
+      // The exit code only: the journal is readable by more than you, and the engine's last line may
+      // name a folder. `signpost.py doctor` and the hover card (when not sharing) show the rest.
+      if (root.restarts === 1) console.warn("signpost: engine exited (" + code + ")")
       restartTimer.start()
     }
   }
@@ -396,7 +402,10 @@ BarWidget {
   Timer { id: restartTimer; onTriggered: engine.running = true }
   // A restart takes about a second; only a longer outage earns the marker.
   Timer { id: downTimer; interval: 4000; onTriggered: root.downShown = !root.engineUp }
+  // While the screen was last known to be shared, the card says only that it stopped: its last line
+  // may name a folder, and the engine that would say whether the share ended is the one that is down.
   readonly property string downReason: {
+    if (root.sharing) return "It stopped. Details are hidden while the screen may be shared."
     var log = String(root.lastLog || "").replace(/^signpost: /, "")
     return log ? log : "It exited without saying why."
   }
@@ -668,7 +677,10 @@ BarWidget {
     if (icon.kind !== "app" || !icon.name) return ""
     var name = String(icon.name)
     if (name in root.iconCache) return root.iconCache[name]
-    var url = name.charAt(0) === "/" ? "file://" + name : (Quickshell.iconPath(name, true) || "")
+    // The engine passes a path only for an image a .desktop file names, after checking it is a regular file.
+    var url = name.charAt(0) === "/"
+      ? (/^\/[^\n?#%]*\.(png|svgz?|xpm)$/i.test(name) ? "file://" + name : "")
+      : (/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(name) ? (Quickshell.iconPath(name, true) || "") : "")
     root.iconCache[name] = url
     return url
   }
@@ -682,6 +694,7 @@ BarWidget {
   property int hoverId: -1
   property Item pinCell: null
   property int pinId: -1
+  property string pinKey: ""      // aliasKey of the project the pin editor opened on
   readonly property bool pinOpen: root.pinId !== -1
   property bool projectsOpen: false
   property int recentRequestSerial: 0
@@ -717,6 +730,8 @@ BarWidget {
     root.hoverId = -1
     root.pinCell = cell
     root.pinId = id
+    // The project the editor is about, as shown now: a rename applies to it or not at all.
+    root.pinKey = String((root.names[String(id)] || {}).aliasKey || "")
   }
   function close() {
     root.pinId = -1
@@ -815,12 +830,35 @@ BarWidget {
     return true
   }
 
+  // A folder the switcher may open: absolute, with no control characters. A newline would show as a
+  // space in the list yet be read differently by the launcher, so the action could land elsewhere.
+  function launchableDirectory(directory) {
+    var d = String(directory || "")
+    return d.charAt(0) === "/" && !/[\x00-\x1f\x7f]/.test(d)
+  }
+
+  // The folder is the new process's working directory (and, for a terminal, xdg-terminal-exec's --dir=).
+  function launchInFolder(directory, command) {
+    if (!root.launchableDirectory(directory)) return false
+    Quickshell.execDetached({ command: command, workingDirectory: directory })
+    return true
+  }
+
+  // Some terminals start in ~ when launched from the desktop, whatever folder they inherit (Ghostty), so
+  // xdg-terminal-exec is also told the folder: --dir= in its own words, unless it would misread it
+  // (it splits at "=" and drops a trailing one).
+  function terminalCommand(directory, extra) {
+    var command = ["uwsm-app", "--", "xdg-terminal-exec"]
+    if (!/=$/.test(directory)) command.push("--dir=" + directory)
+    return command.concat(extra || [])
+  }
+
   function launchProjectTerminal(directory) {
-    Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--dir=" + directory])
+    return root.launchInFolder(directory, root.terminalCommand(directory))
   }
 
   function launchProjectEditor(directory) {
-    Quickshell.execDetached(["omarchy-launch-editor", directory])
+    return root.launchInFolder(directory, ["omarchy-launch-editor", "."])
   }
 
   function splitCommand(text) {
@@ -848,12 +886,12 @@ BarWidget {
   // argument (never through a shell), and the remote is only ever an https address.
   function runProjectAction(kind, project) {
     if (!project || !project.directory) return
-    if (kind === "terminal") root.launchProjectTerminal(project.directory)
-    else if (kind === "editor") root.launchProjectEditor(project.directory)
+    if (kind === "terminal") { if (!root.launchProjectTerminal(project.directory)) return }
+    else if (kind === "editor") { if (!root.launchProjectEditor(project.directory)) return }
     else if (kind === "agent") {
       var agent = root.splitCommand(root.agentCommand)
       if (agent.length === 0) return
-      Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--dir=" + project.directory].concat(agent))
+      if (!root.launchInFolder(project.directory, root.terminalCommand(project.directory, agent))) return
     } else if (kind === "remote") {
       if (!/^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~\/-]+$/.test(project.remote || "")) return
       Quickshell.execDetached(["xdg-open", project.remote])
@@ -878,7 +916,9 @@ BarWidget {
   }
 
   function command(cmd, name) {
-    root.send({ cmd: cmd, ws: root.pinId !== -1 ? root.pinId : root.activeWorkspaceId(), name: name || "" })
+    var message = { cmd: cmd, ws: root.pinId !== -1 ? root.pinId : root.activeWorkspaceId(), name: name || "" }
+    if (root.pinId !== -1 && (cmd === "alias" || cmd === "unalias")) message.key = root.pinKey
+    root.send(message)
   }
 
   HoverCard {

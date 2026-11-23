@@ -29,6 +29,8 @@ text you typed. `explain` says which.
 import argparse
 import concurrent.futures
 import contextlib
+import ctypes
+import ctypes.util
 import fcntl
 import fnmatch
 import glob
@@ -51,7 +53,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 HERE = os.path.dirname(os.path.realpath(__file__))
 HOME = os.path.expanduser("~")
 STATE_HOME = os.environ.get("XDG_STATE_HOME") or HOME + "/.local/state"
@@ -410,6 +412,47 @@ def match_key(name, table, rules=None):
 
 # --------------------------------------------------------------------------- git
 
+ICON_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
+ICON_FILE_SUFFIXES = (".png", ".svg", ".svgz", ".xpm")
+
+
+def safe_icon(value, files=True):
+    """An icon the bar may load: a theme icon name, or (from a .desktop file only) an absolute path to an
+    image file that is a regular file. Anything else is "" (the bar then draws its plain glyph). A window
+    sets its own class, and a sandboxed app can export a .desktop file, so neither may point the bar at a
+    private picture, a FIFO or a device."""
+    value = str(value or "").strip()
+    if ICON_NAME.fullmatch(value):
+        return value
+    # "%" is refused: the bar loads the path as a file:// URL, where %2e and the like would name another file
+    if (not files or not value.startswith("/") or not value.lower().endswith(ICON_FILE_SUFFIXES)
+            or any(c in value for c in "%?#\n")):
+        return ""
+    try:
+        st = os.stat(value)
+    except (OSError, ValueError):
+        return ""
+    return value if statmod.S_ISREG(st.st_mode) and st.st_size <= 4 * 1024 * 1024 else ""
+
+
+def read_small(path, limit=4096):
+    """The start of a regular file, as text; None for anything else. Files under a project folder may come
+    from an archive somebody else made, where `.git` or `HEAD` can be a FIFO (opening it waits forever) or
+    a link to /dev/zero (reading it never ends). Opened without blocking, checked, and read up to `limit`."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return None
+    try:
+        if not statmod.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 class Git:
     """Folder → repo, with worktrees resolved to their main repo. Reads git's files only."""
 
@@ -430,11 +473,10 @@ class Git:
 
     @staticmethod
     def _branch(gitdir):
-        try:
-            with open(os.path.join(gitdir, "HEAD")) as f:
-                head = f.read().strip()
-        except OSError:
+        head = read_small(os.path.join(gitdir, "HEAD"), 256)
+        if head is None:
             return None
+        head = head.strip()
         if head.startswith("ref:"):
             return head.split("refs/heads/", 1)[-1]
         return head[:7] or None
@@ -453,11 +495,7 @@ class Git:
                     if branch is not None:
                         return {"kind": "repo", "root": p, "main": p, "repo": os.path.basename(p) or p, "label": None, "branch": branch}
                 else:
-                    try:
-                        with open(g) as f:
-                            text = f.read().strip()
-                    except OSError:
-                        text = ""
+                    text = (read_small(g) or "").strip()
                     if text.startswith("gitdir:"):
                         return self._resolve_gitfile(p, text[7:].strip())
             parent = os.path.dirname(p)
@@ -517,22 +555,21 @@ class Desktop:
     @staticmethod
     def parse(path):
         entry, section = {}, None
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("["):
-                        if section == "Desktop Entry":
-                            break
-                        section = line.strip("[]")
-                        continue
-                    if section != "Desktop Entry" or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    if k in ("Name", "Icon", "StartupWMClass", "Exec", "NoDisplay") and k not in entry:
-                        entry[k] = v.strip()
-        except OSError:
+        text = read_small(path, 256 * 1024)     # a .desktop file can be anything a sandboxed app exported
+        if text is None:
             return None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                if section == "Desktop Entry":
+                    break
+                section = line.strip("[]")
+                continue
+            if section != "Desktop Entry" or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k in ("Name", "Icon", "StartupWMClass", "Exec", "NoDisplay") and k not in entry:
+                entry[k] = v.strip()
         return entry if entry.get("Name") else None
 
     def load(self):
@@ -549,7 +586,7 @@ class Desktop:
                 if not e:
                     continue
                 exec_ = e.get("Exec", "")
-                item = {"name": e["Name"], "icon": e.get("Icon", ""), "id": n[:-8],
+                item = {"name": e["Name"], "icon": safe_icon(e.get("Icon", "")), "id": n[:-8],
                         "webapp": "--app=" in exec_ or "omarchy-launch-webapp" in exec_}
                 wm = e.get("StartupWMClass", "").lower()
                 if wm and wm not in self.by_wmclass:
@@ -767,6 +804,18 @@ def wezterm_panes(layout, title, shared):
     return matches[0] if len(matches) == 1 else None
 
 
+def own_tty(name):
+    """A terminal device on this machine that belongs to this account (a local WezTerm mux pane has one;
+    a pane in an SSH domain has none)."""
+    if not isinstance(name, str) or not re.fullmatch(r"/dev/pts/\d+", name):
+        return False
+    try:
+        st = os.stat(name)
+    except OSError:
+        return False
+    return statmod.S_ISCHR(st.st_mode) and st.st_uid == os.getuid()
+
+
 def local_pane_folder(cwd):
     if not isinstance(cwd, str):
         return None
@@ -865,7 +914,8 @@ class Probe:
             "pid": pid, "workspace": (c.get("workspace") or {}).get("id"),
             "focus": c.get("focusHistoryID", 99), "floating": bool(c.get("floating")), "shared": shared,
             "app": {"name": short_app_name(entry["name"] if entry else tidy_class(cls), rules),
-                    "icon": entry["icon"] if entry and entry["icon"] else cls.lower(),
+                    # a window picks its own class, so it only ever names a theme icon, never a file
+                    "icon": entry["icon"] if entry and entry["icon"] else safe_icon(cls.lower(), files=False),
                     "desktop": entry["id"] if entry else None,
                     "webapp": bool(entry and entry["webapp"])},
         }
@@ -944,6 +994,11 @@ class Probe:
         identity = pane.get(native_key)
         active = next((tab for tab in tabs if identity and tab.get(proc_key) == identity), None)
         if active is None:
+            # A WezTerm pane that reports its terminal (tty_name, even as null) but none of ours is remote (an
+            # SSH or mux domain): its folder is whatever that host says (OSC 7), so it can't name a folder on
+            # this machine. Older WezTerm output has no tty_name at all; there the folder is all there is.
+            if terminal == "WezTerm" and "tty_name" in pane and not own_tty(pane.get("tty_name")):
+                return
             cwd = local_pane_folder(pane.get("cwd"))
             if not cwd:
                 return
@@ -1029,7 +1084,7 @@ class Probe:
 
     def tmux_pane(self, pts):
         try:
-            r = subprocess.run(["tmux", "display-message", "-p", "-c", pts, "#{pane_current_path}\t#{pane_current_command}"],
+            r = subprocess.run(["tmux", "display-message", "-p", "-c", pts, "#{pane_current_path}\t#{pane_current_command}"], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=0.5)
         except (OSError, subprocess.SubprocessError):
             return None
@@ -1631,14 +1686,36 @@ class Holder:
 
 def private_dir(path):
     """A folder only you can read: Signpost's state names your projects and quotes your agents.
-    An existing folder that others can read is tightened."""
-    os.makedirs(path, mode=0o700, exist_ok=True)
+    An existing folder that others can read is tightened. Every folder it has to create on the way is
+    0700 too (os.makedirs would give the ones in between the umask's mode)."""
+    missing = []
+    p = os.path.abspath(path)
+    while p and not os.path.isdir(p) and os.path.dirname(p) != p:
+        missing.append(p)
+        p = os.path.dirname(p)
+    for d in reversed(missing):
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
     try:
         st = os.stat(path)
         if st.st_uid == os.getuid() and statmod.S_IMODE(st.st_mode) & 0o077:
             os.chmod(path, 0o700)
     except OSError:
         pass
+
+
+def open_lock(path):
+    """A lock file, 0600 like everything else Signpost writes (open(path, "a") would take the umask)."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid == os.getuid() and statmod.S_IMODE(st.st_mode) & 0o077:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    return os.fdopen(fd, "a")
 
 
 def write_private(path, text):
@@ -1786,7 +1863,7 @@ class ProjectHistory:
             return
         try:
             private_dir(str(self.path.parent))
-            with self.path.with_suffix(".lock").open("a") as lock:
+            with open_lock(self.path.with_suffix(".lock")) as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 self.refresh()
                 rest = [other for other in self.entries if other["directory"] != entry["directory"]]
@@ -1815,7 +1892,7 @@ class ProjectHistory:
             return
         try:
             private_dir(str(self.path.parent))
-            with self.path.with_suffix(".lock").open("a") as lock:
+            with open_lock(self.path.with_suffix(".lock")) as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 self.refresh()
                 by_dir = {e["directory"]: e for e in extras}
@@ -1873,7 +1950,7 @@ class ProjectIndex:
         if not binary:
             return []
         try:
-            proc = self._run([binary, "query", "--list"], capture_output=True, text=True, timeout=2)
+            proc = self._run([binary, "query", "--list"], capture_output=True, text=True, timeout=2, stdin=subprocess.DEVNULL)
             if proc.returncode != 0:
                 return []
         except (OSError, subprocess.SubprocessError):
@@ -1991,6 +2068,10 @@ def apply_command(state, cmd, results):
         key = r.get("aliasKey")
         if not key:
             return f"{op}: no project on ws {ws}"
+        shown = cmd.get("key")
+        if isinstance(shown, str) and shown != key:
+            # the editor was about another project than the workspace has now: rename nothing
+            return f"{op}: the project on ws {ws} changed; nothing was renamed"
         if op == "unalias":
             state["aliases"].pop(key, None)
             return f"{r.get('aliasRepo') or key}: alias removed"
@@ -2037,7 +2118,7 @@ def hypr_request(cmd):
         except (OSError, ValueError):
             pass
     try:
-        r = subprocess.run(["hyprctl", "-j", cmd.split("/", 1)[-1]], capture_output=True, text=True, timeout=2)
+        r = subprocess.run(["hyprctl", "-j", cmd.split("/", 1)[-1]], capture_output=True, text=True, timeout=2, stdin=subprocess.DEVNULL)
         return json.loads(r.stdout)
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -2203,7 +2284,7 @@ def hook_main(args):
         return 0
     try:
         payload = json.loads(sys.stdin.read(2 ** 20))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):     # deeply nested input is a RecursionError
         return 0
     if isinstance(payload, dict):
         # Stop expects a JSON result. An empty object leaves Codex's decision unchanged.
@@ -2212,7 +2293,9 @@ def hook_main(args):
         try:
             write_hook(payload, pid=agent_pid(agent=agent), agent=agent)
         except OSError:
-            pass
+            pass                    # the state folder can't be written: nothing to report, nothing to block
+        except Exception as e:      # a status hook must never be the reason an agent stops
+            warn(f"hook: {type(e).__name__}")
     return 0
 
 
@@ -2465,7 +2548,7 @@ class AgentsView:
     def refresh(self, todo):
         try:
             private_dir(os.path.dirname(self.path))
-            with open(self.path + ".lock", "a") as lock:
+            with open_lock(self.path + ".lock") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
@@ -2689,13 +2772,30 @@ def agent_of(directories, by_directory):
 
 # --- installing the hook into Claude Code's settings.json
 
-def hook_command(script=None, agent="claude"):
+def hook_script(agent="claude"):
+    """The shell text inside the installed command. It runs Signpost only while the file is there and
+    always ends with exit 0: Claude Code reads exit 2 as "block" (a prompt is refused, a permission is
+    denied), and that is what python3 returns for a script that no longer exists, for instance after the
+    plugin was removed without `hooks remove` first, or for a moment during an update."""
     suffix = "" if agent == "claude" else f" --agent {agent}"
-    return f"python3 -I {shlex.quote(script or os.path.realpath(__file__))} hook{suffix}"
+    return f'[ -f "$1" ] || exit 0; python3 -I "$1" hook{suffix}; exit 0'
+
+
+def hook_command(script=None, agent="claude"):
+    """`sh -c '<script>' signpost <path>`: the same command whether the agent hands it to a shell or splits
+    it into words itself."""
+    path = script or os.path.realpath(__file__)
+    return f"sh -c {shlex.quote(hook_script(agent))} signpost {shlex.quote(path)}"
+
+
+def default_claude_dir():
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return os.path.abspath(os.path.expanduser(env)) if env else HOME + "/.claude"
 
 
 def claude_config_dirs():
-    """Every Claude Code config folder on this machine that has a settings.json (or the one in use)."""
+    """Every Claude Code config folder on this machine that has a settings.json (or the one in use).
+    For looking only (`status`, and finding old entries to remove): install writes to the one in use."""
     found = []
     env = os.environ.get("CLAUDE_CONFIG_DIR")
     for d in ([env] if env else []) + sorted(glob.glob(HOME + "/.claude*")):
@@ -2709,17 +2809,41 @@ def hook_events(agent):
     return HOOK_EVENTS if agent == "claude" else CODEX_EVENTS
 
 
-def own_handler(handler, agent):
+def handler_script(handler, agent):
+    """The signpost.py path a Signpost handler runs, or None when the handler is not Signpost's. Knows the
+    current form (sh -c …) and the earlier one (python3 -I <path> hook …), so either is found again."""
     if not isinstance(handler, dict) or handler.get("type") != "command":
-        return False
+        return None
     command = handler.get("command")
     try:
         words = shlex.split(command) if isinstance(command, str) else []
     except ValueError:
-        return False
+        return None
     suffix = ["hook"] if agent == "claude" else ["hook", "--agent", agent]
-    return (len(words) == 3 + len(suffix) and words[:2] == ["python3", "-I"]
-            and os.path.basename(words[2]) == HOOK_MARK and words[3:] == suffix)
+    if len(words) == 5 and words[:3] == ["sh", "-c", hook_script(agent)] and words[3] == "signpost":
+        path = words[4]
+    elif len(words) == 3 + len(suffix) and words[:2] == ["python3", "-I"] and words[3:] == suffix:
+        path = words[2]
+    else:
+        return None
+    return path if os.path.basename(path) == HOOK_MARK else None
+
+
+def own_handler(handler, agent):
+    return handler_script(handler, agent) is not None
+
+
+def stale_handlers(settings, agent="claude"):
+    """Signpost handlers that are an older form or point at a signpost.py that is not there."""
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    out = set()
+    for groups in hooks.values():
+        for group in groups if isinstance(groups, list) else []:
+            for h in (group.get("hooks") if isinstance(group, dict) and isinstance(group.get("hooks"), list) else []):
+                path = handler_script(h, agent)
+                if path is not None and (not os.path.isfile(path) or h.get("command") != hook_command(path, agent)):
+                    out.add(path)
+    return sorted(out)
 
 
 def _ours(group, agent="claude"):
@@ -2767,7 +2891,7 @@ def hook_install_state(dirs=None):
     """("installed" | "partial" | "none", [folders]): whether Claude Code reports to Signpost through its
     hook. Reads only the settings.json files that exist (no more than `hooks status` does). An install
     from an older Signpost (fewer events) is "partial": `hooks install` adds the rest."""
-    full, part = [], []
+    full, part, stale = [], [], []
     for d in (claude_config_dirs() if dirs is None else dirs):
         try:
             with open(d + "/settings.json", encoding="utf-8") as f:
@@ -2775,10 +2899,16 @@ def hook_install_state(dirs=None):
         except (OSError, ValueError):
             continue
         have = hooks_installed(settings) if isinstance(settings, dict) else []
-        if len(have) == len(HOOK_EVENTS):
+        if have and stale_handlers(settings):
+            stale.append(collapse_home(d))     # an older or broken entry: `hooks install` puts it right
+        elif len(have) == len(HOOK_EVENTS):
             full.append(collapse_home(d))
         elif have:
             part.append(collapse_home(d))
+    # An entry from an older Signpost (or pointing at a missing signpost.py) comes first, wherever it is: it
+    # is the one that needs `hooks install` again, even when another folder is fully set up.
+    if stale:
+        return "partial", stale + part
     return ("installed", full) if full else ("partial", part) if part else ("none", [])
 
 
@@ -2802,10 +2932,20 @@ def claude_summary(hook, view, script=None):
     return short, detail
 
 
-def hook_dirs(agent, all_claude=False):
+def hook_dirs(agent, op="install"):
+    """Where `hooks <op>` acts. Claude Code: install writes only to the folder in use (CLAUDE_CONFIG_DIR or
+    ~/.claude); status looks at every ~/.claude* folder; remove cleans the folder in use and any other one
+    that still has Signpost entries (from an older Signpost that installed elsewhere)."""
     if agent == "claude":
-        dirs = claude_config_dirs()
-        return dirs if all_claude else dirs[:1]
+        if op == "install":
+            return [default_claude_dir()]
+        if op == "status":
+            return claude_config_dirs()
+        dirs = [default_claude_dir()]
+        for d in claude_config_dirs():
+            if d not in dirs and hook_install_state([d])[0] != "none":
+                dirs.append(d)
+        return dirs
     if agent == "codex":
         return [os.environ.get("CODEX_HOME") or HOME + "/.codex"]
     return [os.environ.get("OPENCODE_CONFIG_DIR") or CONFIG_HOME + "/opencode"]
@@ -2851,7 +2991,11 @@ def json_hook_config(op, directory, agent):
     have = hooks_installed(settings, agent)
     events = hook_events(agent)
     if op == "status":
-        if len(have) == len(events):
+        stale = stale_handlers(settings, agent)
+        if stale:
+            print(f"{path}: needs `hooks install` again (an entry is from an older Signpost or points at a "
+                  f"missing {', '.join(collapse_home(p) for p in stale)})")
+        elif len(have) == len(events):
             print(f"{path}: installed")
         elif have:
             missing = ", ".join(e for e in events if e not in have)
@@ -2864,11 +3008,17 @@ def json_hook_config(op, directory, agent):
     if new == settings:
         print(f"{path}: already {verb}")
         return
-    if before is not None:
-        atomic_write(path + ".signpost-backup", before, 0o600)
+    backup = path + ".signpost-backup"
+    kept_backup = before is not None and not os.path.lexists(backup)
+    if kept_backup:
+        # Only the first time: this is the file as it was before Signpost touched it. Later installs and
+        # removes change nothing but Signpost's own entries, so they do not replace it.
+        atomic_write(backup, before, 0o600)
     os.makedirs(directory, mode=0o700, exist_ok=True)
+    if read_bytes(path) != before:
+        raise ValueError(f"{filename} changed meanwhile; nothing was changed. Try again.")
     atomic_write(path, json_bytes(new), 0o600)
-    print(f"{path}: {verb}" + (f" (backup: {filename}.signpost-backup)" if before is not None else ""))
+    print(f"{path}: {verb}" + (f" (the file as it was: {filename}.signpost-backup)" if kept_backup else ""))
 
 
 def other_hooks_state(codex_dir=None, opencode_dir=None):
@@ -2880,9 +3030,10 @@ def other_hooks_state(codex_dir=None, opencode_dir=None):
         with open(os.path.join(codex_dir, "hooks.json"), encoding="utf-8") as f:
             settings = json.load(f)
         have = hooks_installed(settings, "codex") if isinstance(settings, dict) else []
+        stale = bool(have) and bool(stale_handlers(settings, "codex"))
     except (OSError, ValueError):
-        have = []
-    codex = "installed" if len(have) == len(CODEX_EVENTS) else "partial" if have else "none"
+        have, stale = [], False
+    codex = "partial" if stale else "installed" if len(have) == len(CODEX_EVENTS) else "partial" if have else "none"
     plugin = read_bytes(os.path.join(opencode_dir, "plugins", "signpost", "index.ts"))
     opencode = "installed" if plugin and plugin.startswith(b"// Signpost OpenCode 2.x adapter\n") else "none"
     return {"codex": codex, "opencode": opencode}
@@ -2914,7 +3065,7 @@ def doctor_report(which=shutil.which, run=subprocess.run, rules_file=USER_RULES,
     version = None
     if which("git"):
         try:
-            m = re.search(r"(\d+)\.(\d+)", run(["git", "--version"], capture_output=True, text=True, timeout=3).stdout)
+            m = re.search(r"(\d+)\.(\d+)", run(["git", "--version"], capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL).stdout)
             version = (int(m.group(1)), int(m.group(2))) if m else None
         except (OSError, subprocess.SubprocessError):
             pass
@@ -2975,7 +3126,7 @@ def hooks_cli(args):
     agents = HOOK_AGENTS if options.op == "status" and not options.agent and not options.config_dir else (options.agent or "claude",)
     failed = False
     for agent in agents:
-        for directory in options.config_dir or hook_dirs(agent, options.op == "status"):
+        for directory in options.config_dir or hook_dirs(agent, options.op):
             directory = os.path.abspath(os.path.expanduser(directory))
             try:
                 if agent == "opencode":
@@ -3187,20 +3338,62 @@ def read_bytes(path):
         return None
 
 
+ACL_XATTRS = ("system.posix_acl_access",)
+
+
+def copy_file_access(src_fd, dst_fd, st):
+    """Give dst the mode, owner, group and ACL of the file src was. When the owner/group or the ACL cannot
+    be carried over, dst is narrowed to its owner instead: a replacement may lose access for others, never
+    gain it (the mode's group bits are the ACL mask, which alone could open the file to its group)."""
+    mode = statmod.S_IMODE(st.st_mode)
+    exact = True
+    try:
+        if (st.st_uid, st.st_gid) != (os.geteuid(), os.getegid()):
+            os.fchown(dst_fd, st.st_uid, st.st_gid)
+    except OSError:
+        exact = False
+    for name in ACL_XATTRS:
+        try:
+            value = os.getxattr(src_fd, name)
+        except OSError:
+            continue        # no ACL on the original (or no xattr support): the mode says everything
+        try:
+            os.setxattr(dst_fd, name, value)
+        except OSError:
+            exact = False
+    os.fchmod(dst_fd, mode if exact else mode & 0o700)
+
+
 def atomic_write(path, data, mode=None):
-    path = Path(path)
+    """Replace a file in one step. A symlink keeps pointing where it did (the file it names is the one
+    replaced), and an existing file keeps its mode, owner, group and ACL. `mode` is for a file that does
+    not exist yet; the default is 0600."""
     if data is None:
-        path.unlink(missing_ok=True)
+        Path(path).unlink(missing_ok=True)      # the link itself, never the file it points to
         return
+    path = Path(os.path.realpath(path))
+    try:
+        src = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        src = None
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     draft = Path(name)
     try:
         with os.fdopen(fd, "wb") as stream:
-            if mode is not None:
+            if src is not None:
+                st = os.fstat(src)
+                if not statmod.S_ISREG(st.st_mode):
+                    raise ValueError(f"{path} is not a regular file")
+                copy_file_access(src, stream.fileno(), st)
+            elif mode is not None:
                 os.fchmod(stream.fileno(), mode)
             stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
         draft.replace(path)
     finally:
+        if src is not None:
+            os.close(src)
         draft.unlink(missing_ok=True)
 
 
@@ -3235,7 +3428,7 @@ def bar_swap(operation, config=SHELL_CONFIG, record=RESTORE_FILE, defaults=OMARC
         record.unlink(missing_ok=True)
     if reload:
         try:
-            subprocess.run(["omarchy-shell", "shell", "reloadConfig"], capture_output=True, timeout=5)
+            subprocess.run(["omarchy-shell", "shell", "reloadConfig"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             pass
     if operation == "swap":
@@ -3366,17 +3559,29 @@ def web_remote(url):
 
 
 def git_details(directory, run=subprocess.run):
-    """Branch, how far ahead/behind, changed lines and the web address of origin. {} when it is not a repo."""
-    def git(*args, env=None):
+    """Branch, how far ahead/behind, changed lines and the web address of origin. {} when it is not a repo.
+
+    Fails closed: unless the config was read in full, git is not run on the folder again. The folder goes in
+    as the working directory, not as an argument (an argument shows in the process list to other accounts),
+    git gets no stdin (the engine's own stdin carries the bar's commands), and output is read as bytes,
+    so a driver name that is not UTF-8 is still blanked byte for byte."""
+    def git(*args, env=None, exact=False):
         try:
-            r = run([*GIT_SAFE, "-C", directory, *args], capture_output=True, text=True, timeout=3,
+            r = run([*GIT_SAFE, *args], cwd=directory, stdin=subprocess.DEVNULL, capture_output=True, timeout=3,
                     env=env or git_env(sorted({f"protocol.{p}.allow": "never" for p in GIT_PROTOCOLS}.items())))
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
-        return r.stdout if r.returncode == 0 else None
+        if r.returncode != 0 or not isinstance(r.stdout, bytes):
+            return None
+        # exact: surrogateescape keeps every byte, so a driver name goes back to git as it was. Anything
+        # shown on the bar is decoded with replacement characters instead (it is printed as JSON).
+        return r.stdout.decode("utf-8", "surrogateescape" if exact else "replace")
 
     # First the config, read as text (reading runs nothing), to learn every driver name it defines.
-    pairs = git_neutralizers(git("config", "--list", "--null"))
+    listing = git("config", "--list", "--null", exact=True)
+    if listing is None:
+        return {}           # could not read the config, so its drivers can't be switched off: no git at all
+    pairs = git_neutralizers(listing)
     if pairs is None:
         return {}           # too many drivers to switch off one by one: don't run git on it at all
     env = git_env(pairs)
@@ -3449,6 +3654,17 @@ MONITOR_ARGV = ["gdbus", "monitor", "--session", "--dest", "org.freedesktop.Noti
 ALERT_LIFE = 600     # seconds an alert's button may still jump; after that the watcher is not needed
 
 
+def window_pid(address):
+    """The process of the window at `address` now, or None."""
+    if not address:
+        return None
+    clients = hypr_request("j/clients")
+    for c in clients if isinstance(clients, list) else []:
+        if isinstance(c, dict) and c.get("address") == address:
+            return c.get("pid")
+    return None
+
+
 def proc_table():
     """{pid: (parent pid, argv)} for the processes we may read. Called once, when the engine starts."""
     table = {}
@@ -3466,38 +3682,170 @@ def proc_table():
     return table
 
 
-def stale_monitors(table):
-    """Watchers left behind by an engine that was stopped without time to clean up: ours by their exact
-    command line, and whose parent is no longer a Signpost engine. A live engine's own watcher is kept."""
-    out = []
-    for pid, (ppid, argv) in table.items():
-        if argv == MONITOR_ARGV and not any(os.path.basename(a) == "signpost.py" for a in table.get(ppid, (0, []))[1]):
-            out.append(pid)
-    return out
+def monitor_argv(which=shutil.which):
+    """The watcher's command. setpriv (util-linux) gives it a parent-death signal before it starts gdbus, so
+    it ends with its engine however the engine ends (even SIGKILL). Nothing is ever looked up by command
+    line and stopped: a gdbus monitor of your own with the same arguments is not Signpost's business.
+    (A preexec_fn would do the same, but is not safe in a process that has threads, and this one does.)"""
+    return (["setpriv", "--pdeathsig", "TERM", "--"] if which("setpriv") else []) + MONITOR_ARGV
 
 
-def reap_stale_monitors():
-    for pid in stale_monitors(proc_table()):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+NOTIFY_SIGNATURE = "susssasa{sv}i"
 
 
-def notify_argv(title, body, jump, image="", actions=None):
-    """The busctl call for one notification. With `jump` it carries a "Go to it" button. "--" ends busctl's
-    options, so text that starts with a dash (a folder called -x) is still just text. `image` is a local
-    picture for the card (the hint "image-path"; the service won't take a path as app_icon)."""
+def markup_text(text):
+    """Text for a notification body, which the spec lets a server read as markup (Omarchy's does, with
+    links): & < > as entities, so an agent's or MCP server's words can't become a link or change the look."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def notify_values(title, body, jump, image="", actions=None):
+    """The Notify arguments, in busctl's notation (an array is its length, then its items; a variant is
+    its type, then its value), for the bus call or busctl alike. With `jump` it carries a "Go to it"
+    button. `image` is a local picture for the card (the hint "image-path"; the service won't take a path
+    as app_icon). "transient" keeps alerts out of the notification history: what an agent asked, and in
+    which project, is only for now."""
     # D-Bus counts the strings of the actions array, and each action is an id and a label: two actions, four strings.
     if actions:
         flat = [clean_text(x)[:40] for pair in actions for x in pair]
         actions = [str(len(flat)), *flat]
     else:
         actions = ["4", "go", "Go to it", "default", ""] if jump else ["0"]
-    hints = ["1", "urgency", "y", "1"]
+    hints = [("urgency", "y", "1"), ("transient", "b", "true")]
     if image and image.startswith("/") and "\n" not in image:
-        hints = ["2", "urgency", "y", "1", "image-path", "s", image]
-    return [*NOTIFY_ARGS, "Signpost", "0", "", clean_text(title)[:80], clean_text(body)[:200], *actions, *hints, "10000"]
+        hints.append(("image-path", "s", image))
+    return ["Signpost", "0", "", clean_text(title)[:80], markup_text(clean_text(body)[:200]), *actions,
+            str(len(hints)), *(x for hint in hints for x in hint), "10000"]
+
+
+def notify_argv(title, body, jump, image="", actions=None):
+    """The same notification as a busctl command line, used only when the bus can't be reached directly.
+    A command line is readable by other accounts, so callers pass only text that is not private here.
+    "--" ends busctl's options, so text that starts with a dash is still just text."""
+    return [*NOTIFY_ARGS, *notify_values(title, body, jump, image, actions)]
+
+
+def bus_args(signature, values):
+    """busctl-notation `values` → ctypes arguments for sd_bus_call_method's "…" (the same notation:
+    systemd's sd_bus_message_append is what busctl itself uses)."""
+    values = list(values)
+    out = []
+
+    def take():
+        if not values:
+            raise ValueError("too few values for " + signature)
+        return values.pop(0)
+
+    def one(sig, i):
+        code = sig[i]
+        if code == "a":
+            n = int(take())
+            out.append(ctypes.c_uint(n))
+            start = i + 1
+            end = start
+            for _ in range(max(n, 1)):
+                end = one(sig, start) if n else skip(sig, start)
+            return end
+        if code == "{":
+            j = one(sig, i + 1)
+            j = one(sig, j)
+            return j + 1                     # past "}"
+        if code == "v":
+            inner = take()
+            out.append(ctypes.c_char_p(inner.encode()))
+            one(inner, 0)
+            return i + 1
+        raw = take()
+        if code in "sog":
+            out.append(ctypes.c_char_p(raw.encode("utf-8", "replace")))
+        elif code == "b":
+            out.append(ctypes.c_int(1 if raw in ("true", "1") else 0))
+        elif code in "yi":
+            out.append(ctypes.c_int(int(raw)))      # a byte goes through "…" as an int
+        elif code == "u":
+            out.append(ctypes.c_uint(int(raw)))
+        else:
+            raise ValueError(f"type {code} not supported")
+        return i + 1
+
+    def skip(sig, i):
+        """End of the single complete type at i, without taking values (for an empty array)."""
+        code = sig[i]
+        if code == "a":
+            return skip(sig, i + 1)
+        if code == "{":
+            return skip(sig, skip(sig, i + 1)) + 1
+        return i + 1
+
+    i = 0
+    while i < len(signature):
+        i = one(signature, i)
+    if values:
+        raise ValueError("too many values for " + signature)
+    return out
+
+
+class _BusError(ctypes.Structure):
+    _fields_ = [("name", ctypes.c_char_p), ("message", ctypes.c_char_p), ("need_free", ctypes.c_int)]
+
+
+class SessionBus:
+    """The notification service, called through libsystemd's sd-bus in this process: what an alert says is
+    never on a command line, where other accounts on the machine could read it."""
+
+    DEST = "org.freedesktop.Notifications"
+    PATH = "/org/freedesktop/Notifications"
+
+    def __init__(self, timeout=3.0):
+        self.lib = ctypes.CDLL(ctypes.util.find_library("systemd") or "libsystemd.so.0", use_errno=True)
+        self.bus = ctypes.c_void_p()
+        if self.lib.sd_bus_open_user(ctypes.byref(self.bus)) < 0:
+            raise OSError("no session bus")
+        try:
+            self.lib.sd_bus_set_method_call_timeout(self.bus, ctypes.c_uint64(int(timeout * 1_000_000)))
+        except AttributeError:
+            pass
+
+    def call(self, member, signature, values, reply_type=None):
+        error = _BusError()
+        reply = ctypes.c_void_p()
+        args = bus_args(signature, values)
+        r = self.lib.sd_bus_call_method(self.bus, self.DEST.encode(), self.PATH.encode(), self.DEST.encode(),
+                                        member.encode(), ctypes.byref(error), ctypes.byref(reply),
+                                        signature.encode(), *args)
+        try:
+            self.drain()
+            if r < 0:
+                raise OSError((error.message or b"bus call failed").decode("utf-8", "replace"))
+            if reply_type == "u":
+                value = ctypes.c_uint32()
+                if self.lib.sd_bus_message_read(reply, b"u", ctypes.byref(value)) < 0:
+                    return None
+                return value.value
+            return None
+        finally:
+            self.lib.sd_bus_error_free(ctypes.byref(error))
+            if reply:
+                self.lib.sd_bus_message_unref(reply)
+
+    def drain(self):
+        """Read and drop what else arrived on the connection: some servers send a notification's signals
+        straight to its sender, and unread messages would pile up for as long as the engine runs (the
+        "Go to it" presses are heard by the gdbus watcher instead)."""
+        for _ in range(256):
+            if self.lib.sd_bus_process(self.bus, None) <= 0:
+                return
+
+    def notify(self, values):
+        return self.call("Notify", NOTIFY_SIGNATURE, values, reply_type="u")
+
+    def close_notification(self, nid):
+        self.call("CloseNotification", "u", [str(nid)])
+
+    def close(self):
+        if self.bus:
+            self.lib.sd_bus_flush_close_unref(self.bus)
+            self.bus = ctypes.c_void_p()
 
 
 def clean_palette(raw):
@@ -3794,6 +4142,8 @@ def shell_record(args, directory=COMMAND_DIR):
     """Record the start or exit of one interactive command, without saving arguments."""
     try:
         phase, shell_pid, cwd = args[:3]
+        if cwd == "-":
+            cwd = os.getcwd()       # the shell's folder, inherited: never on the command line
         pid = int(shell_pid)
         facts = read_proc(pid)
         if not facts or facts["session"] != pid or not facts["tty"] or not os.path.isabs(cwd):
@@ -3822,8 +4172,14 @@ def shell_record(args, directory=COMMAND_DIR):
 
 
 def shell_init(shell, script=None):
+    # The snippet passes "-" for the folder: the recorder reads its own working directory, which it inherits
+    # from the shell. A folder on the command line would be readable by every account in /proc. Each call
+    # is skipped once signpost.py is gone, so a removed plugin leaves no error on every prompt.
     quoted = shlex.quote(script or os.path.realpath(__file__))
-    runner = f"command python3 -I {quoted} shell-record"
+    runner = "_signpost_run"
+    posix_run = f"    _signpost_run() {{ [[ -f {quoted} ]] && command python3 -I {quoted} shell-record \"$@\"; }}\n"
+    fish_run = (f"    function _signpost_run\n        test -f {quoted}; and command python3 -I {quoted} shell-record $argv\n"
+                "    end\n")
     if shell == "bash":
         # PS0 runs after a complete interactive command is read, before it executes (never for an
         # empty line). Its expansion sets _signpost_ran in this shell, so an empty Enter runs nothing.
@@ -3831,17 +4187,17 @@ def shell_init(shell, script=None):
         return r'''# Signpost command exit reporting (Bash)
 if [[ $- == *i* && -z ${_signpost_shell_init-} ]]; then
     _signpost_shell_init=1
-    _signpost_start() {
+@POSIX_RUN@    _signpost_start() {
         local HISTTIMEFORMAT= line
         line=$(history 1)
         [[ $line =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]] || return 0
-        printf '%s' "${BASH_REMATCH[2]}" | @RUN@ start "$$" "$PWD" "${BASH_REMATCH[1]}"
+        printf '%s' "${BASH_REMATCH[2]}" | @RUN@ start "$$" - "${BASH_REMATCH[1]}"
     }
     _signpost_end() {
         local result=$?
         [[ -n ${_signpost_ran-} ]] || return "$result"
         unset _signpost_ran
-        @RUN@ end "$$" "$PWD" "$result"
+        @RUN@ end "$$" - "$result"
         return "$result"
     }
     PS0="${PS0-}"'${_signpost_none[_signpost_ran=1]-}$(_signpost_start)'
@@ -3851,40 +4207,40 @@ if [[ $- == *i* && -z ${_signpost_shell_init-} ]]; then
         PROMPT_COMMAND='_signpost_end "$_"'"${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
     fi
 fi
-'''.replace("@RUN@", runner)
+'''.replace("@POSIX_RUN@", posix_run).replace("@RUN@", runner)
     if shell == "zsh":
         return r'''# Signpost command exit reporting (Zsh)
 if [[ -o interactive && -z ${_signpost_shell_init-} ]]; then
     _signpost_shell_init=1
     _signpost_active=0
-    autoload -Uz add-zsh-hook
+@POSIX_RUN@    autoload -Uz add-zsh-hook
     _signpost_start() {
         _signpost_active=1
-        printf '%s' "$1" | @RUN@ start "$$" "$PWD"
+        printf '%s' "$1" | @RUN@ start "$$" -
     }
     _signpost_end() {
         local result=$?
         (( _signpost_active )) || return "$result"
         _signpost_active=0
-        @RUN@ end "$$" "$PWD" "$result"
+        @RUN@ end "$$" - "$result"
         return "$result"
     }
     add-zsh-hook preexec _signpost_start
     precmd_functions=(_signpost_end ${precmd_functions:#_signpost_end})
 fi
-'''.replace("@RUN@", runner)
+'''.replace("@POSIX_RUN@", posix_run).replace("@RUN@", runner)
     if shell == "fish":
         return r'''# Signpost command exit reporting (Fish)
 if status is-interactive
-    function _signpost_start --on-event fish_preexec
-        printf '%s' "$argv[1]" | @RUN@ start "$fish_pid" "$PWD"
+@FISH_RUN@    function _signpost_start --on-event fish_preexec
+        printf '%s' "$argv[1]" | @RUN@ start "$fish_pid" -
     end
     function _signpost_end --on-event fish_postexec
         set -l result $status
-        @RUN@ end "$fish_pid" "$PWD" "$result"
+        @RUN@ end "$fish_pid" - "$result"
     end
 end
-'''.replace("@RUN@", runner)
+'''.replace("@FISH_RUN@", fish_run).replace("@RUN@", runner)
     raise ValueError("expected bash, zsh or fish")
 
 
@@ -4036,10 +4392,12 @@ class Engine:
             try:
                 state_file = str(self.state_file)
                 private_dir(os.path.dirname(state_file))
-                with open(state_file + ".lock", "a") as lock:
+                with open_lock(state_file + ".lock") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX)
                     fresh = load_state(self.state_file)
-                    self.state.update(colors=fresh["colors"], nextSlot=fresh["nextSlot"])
+                    # all of it, pins and renames too: writing ours back could undo another bar's edit
+                    self.state.update(colors=fresh["colors"], nextSlot=fresh["nextSlot"], pins=fresh["pins"],
+                                      aliases=fresh["aliases"], recent=fresh["recent"])
                     if assign_slots(self.state, keys):
                         self.save()
             except OSError:
@@ -4181,6 +4539,23 @@ class Engine:
         return {"agent": status["state"], "agentTs": status["ts"], "agentMessage": status["message"],
                 "agentName": status["name"], "agentLabel": label, "mixedAgents": mixed}
 
+    def edit_state(self, change):
+        """Apply `change(state)` to a fresh read of the state file, under its lock, and save: a pin or a
+        rename from one bar can't drop another bar's at the same moment. Returns what `change` returned."""
+        state_file = str(self.state_file)
+        try:
+            private_dir(os.path.dirname(state_file))
+            with open_lock(state_file + ".lock") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                fresh = load_state(self.state_file)
+                self.state.update(pins=fresh["pins"], aliases=fresh["aliases"], recent=fresh["recent"])
+                result = change(self.state)
+                self.save()
+                return result
+        except OSError:
+            result = change(self.state)      # can't lock or write: still applies to this run
+            return result
+
     def save(self):
         # Another monitor's bar may have handed out colours since we read the file: keep them.
         fresh = load_state(self.state_file)
@@ -4227,38 +4602,105 @@ def portal_streams(run=subprocess.run, which=shutil.which):
 
     Hyprland's event socket reports a share when it starts and when it stops. It does not replay the start to
     a watcher that connects later, so the events alone cannot show a share that began before Signpost did.
-    The portal publishes each share as a PipeWire node named xdph-streaming-…, and that outlasts the event.
+    The portal's share outlasts the event as a PipeWire stream, and that is what is counted here.
+
+    xdg-desktop-portal-hyprland makes each one with pw_stream_new(core, "xdph-streaming-…", {media.class:
+    Video/Source}). PipeWire stores that name as media.name and fills node.name from the program, so a share
+    is a node that either carries an xdph-streaming name (in media.name, or node.name), or is a Video/Source
+    belonging to an xdg-desktop-portal process (node or client properties), whatever the name.
     Without pw-dump there is nothing to ask, and only the events are left (0 here, with a warning at start)."""
     if not which("pw-dump"):
         return 0
     try:
-        r = run(["pw-dump"], capture_output=True, text=True, timeout=4)
+        r = run(["pw-dump"], capture_output=True, text=True, timeout=4, stdin=subprocess.DEVNULL)
         objects = json.loads(r.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     if r.returncode != 0 or not isinstance(objects, list):
         return None
-    count = 0
-    for obj in objects:
+
+    def props_of(obj):
         info = obj.get("info") if isinstance(obj, dict) else None
         props = info.get("props") if isinstance(info, dict) else None
-        if isinstance(props, dict) and str(props.get("node.name") or "").startswith("xdph-streaming"):
+        return props if isinstance(props, dict) else {}
+
+    def text(props, key):
+        value = props.get(key)
+        return value if isinstance(value, str) else ""
+
+    owner_keys = ("node.name", "application.name", "application.process.binary")
+    clients = {obj.get("id"): props_of(obj) for obj in objects
+               if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Client"}
+    count = 0
+    for obj in objects:
+        if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Node":
+            continue
+        props = props_of(obj)
+        if any(text(props, k).startswith("xdph-streaming") for k in ("media.name", "node.name")):
+            count += 1
+            continue
+        if text(props, "media.class") != "Video/Source":
+            continue
+        cid = props.get("client.id")
+        client = clients.get(cid, {}) if isinstance(cid, (int, str)) else {}
+        if any("xdg-desktop-portal" in text(p, k) for p in (props, client) for k in owner_keys):
             count += 1
     return count
 
 
+CAPTURE_PROGRAMS = {"gpu-screen-recorder", "wf-recorder", "wl-screenrec", "gliff-server"}
+
+
+def capture_processes(proc="/proc", uid=None):
+    """This account's screen recorders and remote-desktop servers. They capture without the portal (KMS,
+    or the compositor's own capture protocols), so no PipeWire stream shows them; Omarchy's recorder and
+    its remote-desktop server are among them. The executable decides, as Omarchy's own check does: a
+    process can rename itself, and the kernel cuts names to 15 characters."""
+    uid = os.getuid() if uid is None else uid
+    count = 0
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            if os.stat(f"{proc}/{name}").st_uid != uid:
+                continue
+            exe = os.readlink(f"{proc}/{name}/exe")
+        except OSError:
+            continue
+        if os.path.basename(exe.removesuffix(" (deleted)")) in CAPTURE_PROGRAMS:
+            count += 1
+    return count
+
+
+def screen_captures(streams=portal_streams, processes=capture_processes):
+    """Everything capturing the screen right now: portal streams and recorder or remote-desktop processes.
+    None when PipeWire would not say (then a share is assumed)."""
+    portal = streams()
+    return None if portal is None else portal + processes()
+
+
 class Daemon:
     TICK = 0.5   # how often the agent files and git lookups are checked
-    STREAMS_EVERY = 5.0   # how often PipeWire is asked about screen shares
-    STREAMS_RETRY = 2.0   # ...and how soon again when it would not say
+    STREAMS_EVERY = 5.0   # how often PipeWire and the process list are asked about screen captures
+    STREAMS_RETRY = 2.0   # ...and how soon again when PipeWire would not say
+    # Hyprland reports a capture as stopped as soon as frames pause for half a second (an idle screen during
+    # a share), then as started again. Names stay hidden this long after a stop, and until a fresh look at
+    # PipeWire and the process list finds nothing, so a pause never flashes them to the viewer.
+    SHARE_GRACE = 5.0
     COALESCE = 0.04  # events that arrive together (a workspace switch sends several) are handled once
     EVENTS = {"openwindow", "closewindow", "movewindowv2", "movewindow", "workspacev2", "workspace", "focusedmonv2",
               "createworkspacev2", "destroyworkspacev2", "moveworkspacev2", "changefloatingmode", "configreloaded",
               "activewindowv2", "windowtitlev2"}
 
-    def __init__(self, engine, streams=portal_streams):
+    def __init__(self, engine, streams=screen_captures, bus=SessionBus):
         self.e = engine
         self.probe_streams = streams
+        self.open_bus = bus
+        self.bus = None           # SessionBus once opened; False when it can't be
         self.sel = selectors.DefaultSelector()
         self.sock = None
         self.buf = b""
@@ -4270,8 +4712,9 @@ class Daemon:
         self.next_poll = now + engine.settings["pollSeconds"]
         self.next_full = now + engine.settings["fullSeconds"]
         self.casts = {}           # screen shares Hyprland has announced since we connected, by what is shared
-        self.streams = 0          # shares the portal has open, as PipeWire last said; None: it would not say
+        self.streams = 0          # captures running (portal streams + recorders), as last seen; None: unknown
         self.next_streams = now   # when to ask PipeWire again
+        self.cast_ended = None    # when Hyprland last said a capture stopped (monotonic)
         self.warned_streams = False
         self.last_out = None
         self.reconnect_at = 0.0
@@ -4283,10 +4726,14 @@ class Daemon:
         self.monitor = None       # gdbus watching for button presses on those notifications
         self.mon_buf = b""
 
-    def sharing(self):
-        """Is the screen possibly being shared? Yes when Hyprland announced a share, when the portal has a
-        stream open, and when we cannot tell: showing names by mistake costs more than hiding them."""
-        return bool(self.casts) or self.streams is None or self.streams > 0
+    def sharing(self, now=None):
+        """Is the screen possibly being captured? Yes when Hyprland announced a capture, for SHARE_GRACE after
+        it said one stopped, when a portal stream or a recorder runs, and when we cannot tell: showing names
+        by mistake costs more than hiding them."""
+        if self.casts or self.streams is None or self.streams > 0:
+            return True
+        now = time.monotonic() if now is None else now
+        return self.cast_ended is not None and now - self.cast_ended < self.SHARE_GRACE
 
     def check_streams(self, now):
         """Ask PipeWire about open shares. Catches one that began before we started, or while the event socket
@@ -4334,9 +4781,15 @@ class Daemon:
         sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
         sys.stdout.flush()
 
+    DEBUG = bool(os.environ.get("SIGNPOST_DEBUG"))
+
     def log(self, events):
-        for ev in events:
-            warn(ev)
+        """Renames ("ws 3 "acme" → "Arc" in 5 s") name your projects. The widget passes the engine's
+        stderr on in places others may read (the journal, the hover card while the engine is down), so
+        they are written only with SIGNPOST_DEBUG=1; `signpost.py explain` shows the same on demand."""
+        if self.DEBUG:
+            for ev in events:
+                warn(ev)
 
     def schedule(self, addr=None):
         if addr:
@@ -4345,7 +4798,6 @@ class Daemon:
             self.due = time.monotonic() + self.COALESCE
 
     def run(self):
-        reap_stale_monitors()
         self.active = active_window()
         self.connect()
         try:
@@ -4361,6 +4813,8 @@ class Daemon:
         while True:
             now = time.monotonic()
             deadlines = [self.next_poll, self.next_full, self.next_tick, self.next_streams]
+            if self.cast_ended is not None and now - self.cast_ended < self.SHARE_GRACE:
+                deadlines.append(self.cast_ended + self.SHARE_GRACE)   # names may come back then
             if self.due is not None:
                 deadlines.append(self.due)
             nd = self.e.holder.next_due()
@@ -4393,6 +4847,7 @@ class Daemon:
             self.e.holder.tick(now)
             if now >= self.next_streams:
                 self.check_streams(now)
+            self.close_alerts_for_sharing()
             if now >= self.next_tick:
                 self.next_tick = now + self.TICK
                 self.tick_agents()
@@ -4442,7 +4897,8 @@ class Daemon:
                 continue      # the bar on another monitor has announced it
             project = row["name"] if row else (os.path.basename(s["cwd"].rstrip("/")) if s["cwd"] else "")
             picture = alert_picture(row.get("slot"), row.get("monogram"), self.e.palette) if row else SIGNPOST_ICON
-            self.notify(*wait_alert(s, project, ws, mixed), ws, picture)
+            self.notify(*wait_alert(s, project, ws, mixed), ws, picture,
+                        address=(row.get("address") or "") if row else "")
 
     def offer_swap(self):
         """Once ever: Signpost sits on the bar next to Omarchy's workspace widget (two rows of numbers),
@@ -4452,7 +4908,7 @@ class Daemon:
         self.notify("Signpost is on your bar twice over",
                     "Omarchy's workspace numbers are still there too. Replace them with Signpost? "
                     "(Undo any time: signpost.py unswap)", 0, SIGNPOST_ICON,
-                    actions=[("replace", "Replace"), ("keep", "Keep both")])
+                    actions=[("replace", "Replace"), ("keep", "Keep both")], private=False)
 
     def run_hint(self, choice):
         """Replace (the installer's swap, with its restore record) or Keep both (never ask again)."""
@@ -4467,16 +4923,51 @@ class Daemon:
         self.e.hint = bar_hint(state_dir, self.e.shell_config)
         self.last_out = None
 
-    def notify(self, title, body, ws, image="", actions=None):
-        try:
-            r = subprocess.run(notify_argv(title, body, bool(ws), image, actions), capture_output=True, text=True, timeout=3)
-        except (OSError, subprocess.SubprocessError):
-            return
-        nid = parse_notify_id(r.stdout)
+    def reset_bus(self):
+        """After a failed call, open a new connection next time (the old one may have been dropped)."""
+        if self.bus:
+            try:
+                self.bus.close()
+            except OSError:
+                pass
+        self.bus = None
+
+    def session_bus(self):
+        """The notification service through sd-bus, opened once; None where libsystemd can't be used."""
+        if self.bus is None:
+            try:
+                self.bus = self.open_bus()
+            except (OSError, AttributeError) as e:
+                warn(f"notifications through sd-bus unavailable ({e}); alerts leave out what they are about")
+                self.bus = False
+        return self.bus or None
+
+    def notify(self, title, body, ws, image="", actions=None, private=True, address=""):
+        """One notification. `private` text (projects, an agent's question) only ever goes over the bus from
+        this process. Without sd-bus such an alert falls back to busctl with nothing private in it, since a
+        command line can be read by every account on the machine."""
+        bus = self.session_bus()
+        nid = None
+        if bus is not None:
+            try:
+                nid = bus.notify(notify_values(title, body, bool(ws), image, actions))
+            except (OSError, ValueError):
+                nid = None
+                self.reset_bus()
+        else:
+            if private:
+                title, body, image = "An agent needs you", f"Workspace {ws}" if ws else "", ""
+            try:
+                r = subprocess.run(notify_argv(title, body, bool(ws), image, actions), capture_output=True,
+                                   text=True, timeout=3, stdin=subprocess.DEVNULL)
+                nid = parse_notify_id(r.stdout)
+            except (OSError, subprocess.SubprocessError):
+                return
         if nid and (ws or actions):
             if len(self.alerts) > 50:
                 self.forget_alert(next(iter(self.alerts)))
-            self.alerts[nid] = ws if ws else {"hint": True}
+            # the agent's window too, so Go to it finds it after it moved, not whatever took its number
+            self.alerts[nid] = {"ws": ws, "address": address, "pid": window_pid(address)} if ws else {"hint": True}
             self.alert_times[nid] = time.monotonic()
             self.watch_alerts()
 
@@ -4485,7 +4976,7 @@ class Daemon:
             return
         try:
             self.monitor = subprocess.Popen(
-                MONITOR_ARGV,
+                monitor_argv(),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
             os.set_blocking(self.monitor.stdout.fileno(), False)
             self.sel.register(self.monitor.stdout, selectors.EVENT_READ, "notif")
@@ -4512,13 +5003,18 @@ class Daemon:
             if not action or action[0] not in self.alerts:
                 continue      # another bar's alert, or not ours at all
             target = self.alerts[action[0]]
-            if isinstance(target, dict):
+            if target.get("hint"):
                 if action[1] in ("replace", "keep"):
                     self.forget_alert(action[0])
                     self.run_hint(action[1])
             elif action[1] in ("go", "default"):
                 self.forget_alert(action[0])
-                self.send({"jump": target})
+                # Hyprland can hand a closed window's address to a new one: only the same window (same
+                # process) is focused by address; otherwise Go to it goes to the workspace the alert named.
+                address = target.get("address") or ""
+                if address and (target.get("pid") is None or window_pid(address) != target.get("pid")):
+                    address = ""
+                self.send({"jump": target["ws"], "address": address})
 
     def forget_alert(self, nid):
         self.alerts.pop(nid, None)
@@ -4554,6 +5050,23 @@ class Daemon:
 
     def close(self):
         self.stop_monitor()
+        if self.bus:
+            self.bus.close()
+
+    def close_alerts_for_sharing(self):
+        """A share has begun: take down the alerts still on screen (they name projects and say what an agent
+        asked), and forget them, so a later press can't jump either."""
+        if not self.alerts or not self.sharing():
+            return
+        bus = self.session_bus()
+        for nid in list(self.alerts):
+            if bus is not None:
+                try:
+                    bus.close_notification(nid)
+                except (OSError, ValueError):
+                    self.reset_bus()
+                    bus = None
+            self.forget_alert(nid)
 
     def read_events(self):
         try:
@@ -4583,6 +5096,12 @@ class Daemon:
                     self.casts[owner] = count - 1
                 elif state == "0":
                     self.casts.pop(owner, None)
+                if state == "0":
+                    self.cast_ended = time.monotonic()
+                self.next_streams = 0.0      # look at PipeWire and the recorders now, not in up to 5 s
+                if state == "1":
+                    self.emit()              # hide at once, before any probe or other work in this round
+                self.schedule()
             elif name == "windowtitlev2":
                 addr = arg.split(",", 1)[0]
                 self.schedule(addr if addr.startswith("0x") else "0x" + addr)  # look at that window again
@@ -4626,8 +5145,7 @@ class Daemon:
             self.log(self.e.recompute("all", force=True, active=self.active))
         elif op in ("pin", "unpin", "alias", "unalias"):
             ws = cmd.get("ws") or focused_workspace()
-            warn(apply_command(self.e.state, {**cmd, "ws": ws}, self.e.results))
-            self.e.save()
+            self.log([self.e.edit_state(lambda state: apply_command(state, {**cmd, "ws": ws}, self.e.results))])
             self.log(self.e.recompute(set(), force=True, active=self.active))
         elif op == "capture":
             warn(f"capture saved {capture(self.e, cmd.get('ws') or focused_workspace())}")
@@ -4774,8 +5292,8 @@ def main(argv):
         return 0
     if cmd in ("pin", "unpin", "alias", "unalias"):
         engine.recompute(force=True)
-        msg = apply_command(engine.state, {"cmd": cmd, "ws": ws, "name": " ".join(rest)}, engine.results)
-        engine.save()
+        msg = engine.edit_state(lambda state: apply_command(state, {"cmd": cmd, "ws": ws, "name": " ".join(rest)},
+                                                            engine.results))
         print(msg)
         return 0
     warn(f"unknown command {cmd!r}; try --help")

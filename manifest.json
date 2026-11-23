@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.tammyx44.signpost",
   "name": "Signpost",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": "TammyX44",
   "license": "MIT",
   "description": "Names workspaces from their contents, shows agent and terminal command status, and adds a project switcher. Claude Code and trusted Codex hooks report permission requests directly. OpenCode 2.x support is experimental, and unread counts are opt-in.",
@@ -11,6 +11,9 @@
   ],
   "entryPoints": {
     "barWidget": "Signpost.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.workspaces"
   },
   "barWidget": {
     "displayName": "Signpost",
